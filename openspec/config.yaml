@@ -1,0 +1,36 @@
+schema: spec-driven
+
+context: |
+  Все артефакты OpenSpec пишутся на русском.
+  wallet-mcp — MCP-сервер стека (порт 8088): C++17, cpp-httplib, без своей БД и без
+  LLM. Транспорт — MCP Streamable HTTP (JSON-RPC: initialize, tools/list, tools/call)
+  за wallet-gateway на префиксе /api/mcp/, который JWT-гейт гейтвея НЕ проверяет —
+  каждый запрос аутентифицирует сам сервис.
+  Модель приносит клиент (LM Studio сейчас, позже любой MCP-клиент); сервис только
+  исполняет детерминированные инструменты.
+  Инвариант: только чтение. Данные — из wallet-report токеном пользователя; прав на
+  базу кошелька и инструментов записи нет. Суммы считает SQL в wallet-report, а не
+  модель и не этот сервис по сырым строкам.
+  Аутентификация: персональный непрозрачный токен `wmcp_…` (google-auth) меняется на
+  JWT через POST /internal/mcp/token (aud wallet-report, scope reports:read, без role,
+  exp 300 с), JWT кешируется в памяти до exp по хэшу токена. У инструментов нет
+  параметров user_id/ledger_id/as_user_id.
+  Общий код (util/: jwt, jwks, jwt_claims, log, metrics, dotenv; clients/, expense/
+  resolver) — копия wallet-common в third_party/wallet-common/, правится в
+  wallet-common и копируется scripts/vendor.sh.
+  Каркас как у wallet-report/wallet-ai: /healthz, /version, /metrics, /openapi.yaml,
+  /docs (Swagger UI вендорен), JSON-логи с trace_id из X-Trace-Id.
+  LAN-only MVP; сборка — Docker (Containerfile, BUILD_JOBS=3), по одному C++-сервису за раз.
+  Общие планы — org/docs/TODO_*.md.
+
+rules:
+  specs:
+    - Каждое требование — с хотя бы одним сценарием WHEN/THEN
+    - Имена инструментов, их аргументы, коды JSON-RPC ошибок и тексты, которые видит модель, приводить дословно
+    - Контракты апстримов не дублировать — ссылаться на openapi.yaml wallet-report и google-auth
+  design:
+    - Явно указывать, нужна ли правка в другом сервисе (google-auth, wallet-report, wallet-api, wallet-gateway, wallet-web, wallet-infra) или в wallet-common
+    - Для каждого нового инструмента — какой эндпоинт wallet-report он вызывает и почему итог считает не модель
+  tasks:
+    - Каждая задача заканчивается проверкой — юнит-тест (ctest) или вызов через гейтвей на живом стеке
+    - Изменение инструмента сопровождается правкой README.md (таблица инструментов)
