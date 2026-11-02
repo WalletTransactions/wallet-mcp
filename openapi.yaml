@@ -1,0 +1,272 @@
+openapi: 3.1.0
+info:
+  title: wallet-mcp
+  version: "0.1.0"
+  description: |
+    MCP-сервер стека WalletTransactions (транспорт MCP Streamable HTTP,
+    JSON-RPC 2.0): MCP-клиент (LM Studio, позже любой) с персональным
+    токеном `wmcp_…` вызывает инструменты кошелька **только для чтения**.
+    Модель приносит клиент; сервис исполняет детерминированные инструменты,
+    данные берёт из wallet-report JWT пользователя.
+
+    Каждый запрос к `/api/mcp/` аутентифицируется сам: `Authorization: Bearer
+    wmcp_…` → обмен в google-auth (`POST /internal/mcp/token`, operationId
+    `exchangeMcpToken` в openapi.yaml google-auth) → JWT на 300 с (кеш в
+    памяти по SHA-256 токена). JWT-гейт wallet-gateway этот префикс не
+    проверяет. `Mcp-Session-Id` личность не подтверждает.
+
+    Инструменты, их аргументы и ответы описывает сам MCP (`tools/list`), а
+    не эта спецификация; таблица — в README.md.
+
+    В проде запросы идут через `wallet-gateway` (порт 8090, префикс
+    `/api/mcp/`). Ниже — прямой адрес сервиса.
+servers:
+  - url: http://localhost:8088
+    description: Прямой адрес сервиса (по умолчанию, см. .env.example — PORT)
+
+tags:
+  - name: mcp
+    description: MCP Streamable HTTP — один эндпоинт JSON-RPC (src/mcp_http.cpp, src/mcp.cpp)
+  - name: docs
+    description: "Служебное: liveness, версия, метрики, эта спецификация и Swagger UI (src/docs.cpp)"
+
+paths:
+  /api/mcp/:
+    post:
+      operationId: mcpMessage
+      summary: Одно сообщение JSON-RPC 2.0 протокола MCP
+      description: |
+        Методы: `initialize`, `ping`, `tools/list`, `tools/call`; уведомления
+        (`notifications/initialized`, `notifications/cancelled` и любые без
+        `id`) — `202` без тела. Батчи (JSON-массив) не поддерживаются.
+        Потоковых ответов (SSE) нет: на запрос — один JSON-ответ.
+
+        Порядок проверок: тело больше 64 КБ — `413` (до аутентификации);
+        нет `Authorization: Bearer wmcp_…` или токен не того формата — `401`
+        (в google-auth не отправляется); google-auth ответил `401` — `401`;
+        google-auth недоступен — `503`; заголовок `MCP-Protocol-Version` с
+        незнакомой версией — `400`; дальше — разбор JSON-RPC.
+
+        Ошибки протокола — JSON-RPC-ошибка с HTTP `200`: `-32700` (не JSON),
+        `-32600` (не объект JSON-RPC 2.0, батч), `-32601` (неизвестный метод),
+        `-32602` (неизвестный инструмент, аргументы не по `inputSchema`).
+        Ошибка инструмента (дата не существует, имя не найдено или
+        неоднозначно, wallet-report недоступен) — `result` с `isError: true`
+        и текстом для модели.
+
+        Версии протокола: `2025-11-25`, `2025-06-18`, `2025-03-26` — сервис
+        отвечает запрошенной, иначе `2025-11-25`. Ревизия `2026-07-28` (без
+        рукопожатия) не поддерживается: клиент, умеющий обе, по `400` на
+        незнакомый `MCP-Protocol-Version` переходит на `initialize`.
+      tags: [mcp]
+      security: [{mcpToken: []}]
+      parameters:
+        - name: MCP-Protocol-Version
+          in: header
+          required: false
+          schema: {type: string, example: "2025-06-18"}
+          description: Версия протокола после рукопожатия; незнакомая — `400`.
+        - name: Mcp-Session-Id
+          in: header
+          required: false
+          schema: {type: string}
+          description: Принимается и не проверяется — сессий сервис не хранит.
+        - name: X-Trace-Id
+          in: header
+          required: false
+          schema: {type: string}
+          description: trace_id от гейтвея — попадает в логи и в вызовы google-auth и wallet-report.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/JsonRpcRequest"}
+            examples:
+              initialize:
+                value: {jsonrpc: "2.0", id: 1, method: initialize,
+                        params: {protocolVersion: "2025-06-18", capabilities: {}, clientInfo: {name: lmstudio, version: "0.3"}}}
+              toolsList:
+                value: {jsonrpc: "2.0", id: 2, method: tools/list}
+              spending:
+                value: {jsonrpc: "2.0", id: 3, method: tools/call,
+                        params: {name: spending_by_category,
+                                 arguments: {from: "2026-09-01", to: "2026-09-30", categories: ["Няня", "Продукты", "Кафе"]}}}
+      responses:
+        "200":
+          description: |
+            JSON-RPC-ответ: `result` или `error`. На `initialize` — заголовок
+            `Mcp-Session-Id` (UUID v4, нигде не хранится).
+          headers:
+            Mcp-Session-Id:
+              schema: {type: string, format: uuid}
+              description: Только в ответе на initialize.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/JsonRpcResponse"}
+              examples:
+                toolResult:
+                  value: {jsonrpc: "2.0", id: 3, result: {isError: false, content: [{type: text,
+                          text: "{\"period\":{\"from\":\"2026-09-01\",\"to\":\"2026-09-30\"},\"currency\":\"RUB\",\"rows\":[{\"category\":\"Няня\",\"amount\":\"32000.00\"}],\"total\":\"32000.00\",\"incomplete\":false}"}]}}
+                toolError:
+                  value: {jsonrpc: "2.0", id: 3, result: {isError: true, content: [{type: text,
+                          text: "\"каф\" подходит к нескольким: Кафе, Кафе на работе. Уточните."}]}}
+        "202":
+          description: Уведомление или ответ клиента принят; тела нет.
+        "400":
+          description: Незнакомая версия в `MCP-Protocol-Version` — JSON-RPC-ошибка `-32000` без `id`.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/JsonRpcResponse"}
+        "401":
+          description: |
+            Нет токена, токен не `wmcp_…`, отозван или истёк (google-auth ответил
+            `401`), либо wallet-report дважды отказал JWT. Заголовок
+            `WWW-Authenticate: Bearer`.
+          headers:
+            WWW-Authenticate:
+              schema: {type: string, example: Bearer}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AuthError"}
+              example: {error: invalid_token,
+                        message: "MCP-токен недействителен или истёк — выпустите новый в веб-кабинете: Настройки → Устройства"}
+        "413":
+          description: Тело больше 64 КБ — не разбирается, токен не проверяется.
+        "503":
+          description: google-auth не ответил или ответил не `200`/`401` — токен недействительным не считается.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AuthError"}
+              example: {error: unavailable, message: "Сервис авторизации временно недоступен, попробуйте позже"}
+    get:
+      operationId: mcpStream
+      summary: Поток SSE не поддерживается — 405
+      description: "Серверных уведомлений нет, поэтому `GET` (в том числе с `Accept: text/event-stream`) отвечает `405`."
+      tags: [mcp]
+      security: []
+      responses:
+        "405":
+          description: "`Allow: POST`"
+    delete:
+      operationId: mcpEndSession
+      summary: Сессий нет — 405
+      tags: [mcp]
+      security: []
+      responses:
+        "405":
+          description: "`Allow: POST`"
+
+  /docs:
+    get:
+      operationId: docs
+      summary: "Swagger UI поверх /openapi.yaml (эта самая страница)"
+      tags: [docs]
+      security: []
+      responses:
+        "200":
+          description: HTML-страница Swagger UI (вендоренный статический бандл, см. third_party/swagger-ui/README.md)
+          content:
+            text/html: {schema: {type: string}}
+
+  /openapi.yaml:
+    get:
+      operationId: openApiYaml
+      summary: "Эта самая спецификация — файл рядом с исполняемым файлом, отдаётся как есть"
+      tags: [docs]
+      security: []
+      responses:
+        "200":
+          description: Текст этого файла
+          content:
+            application/yaml: {schema: {type: string}}
+
+  /healthz:
+    get:
+      operationId: healthz
+      summary: "Liveness для compose healthcheck — google-auth и wallet-report не проверяет"
+      tags: [docs]
+      security: []
+      responses:
+        "200":
+          description: Сервис жив (в access-лог не пишется)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: {type: string, example: ok}
+
+  /version:
+    get:
+      operationId: version
+      summary: "Версия этого билда (VERSION и git-хэш на сборке)"
+      tags: [docs]
+      security: []
+      responses:
+        "200":
+          description: Версия и git-хэш текущего билда (`unknown` без GIT_COMMIT)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  service: {type: string, example: wallet-mcp}
+                  version: {type: string, example: "0.1.0"}
+                  git_commit: {type: string, example: "a1b2c3d4"}
+
+  /metrics:
+    get:
+      operationId: metrics
+      summary: Метрики Prometheus (текстовый формат 0.0.4)
+      description: |
+        `build_info`, `http_requests_total`, `http_request_duration_seconds`,
+        `mcp_tool_calls_total{tool,result}` (`ok`/`tool_error`/`unavailable`),
+        `mcp_tool_duration_seconds{tool}`, `mcp_token_exchange_total{result}`
+        (`ok`/`invalid`/`unavailable`), `mcp_token_cache_total{result}`
+        (`hit`/`miss`), `mcp_reports_errors_total{kind}` (`network`,
+        `http_<код>`). В access-лог не пишется.
+      tags: [docs]
+      security: []
+      responses:
+        "200":
+          description: Метрики
+          content:
+            text/plain: {schema: {type: string}}
+
+components:
+  securitySchemes:
+    mcpToken:
+      type: http
+      scheme: bearer
+      description: "Персональный MCP-токен `wmcp_<43 символа base64url>` — выпускается в веб-кабинете (google-auth `POST /auth/mcp-tokens`). Не JWT."
+
+  schemas:
+    JsonRpcRequest:
+      type: object
+      properties:
+        jsonrpc: {type: string, const: "2.0"}
+        id: {type: [string, integer], description: "Нет id — уведомление (ответ 202)"}
+        method: {type: string, enum: [initialize, ping, tools/list, tools/call, notifications/initialized, notifications/cancelled]}
+        params: {type: object}
+      required: [jsonrpc, method]
+
+    JsonRpcResponse:
+      type: object
+      properties:
+        jsonrpc: {type: string, const: "2.0"}
+        id: {type: [string, integer, "null"]}
+        result: {type: object}
+        error:
+          type: object
+          properties:
+            code: {type: integer, enum: [-32700, -32600, -32601, -32602, -32000]}
+            message: {type: string}
+          required: [code, message]
+      required: [jsonrpc]
+
+    AuthError:
+      type: object
+      properties:
+        error: {type: string, enum: [invalid_token, unavailable]}
+        message: {type: string}
+      required: [error, message]
