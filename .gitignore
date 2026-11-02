@@ -1,0 +1,17 @@
+/build
+/build-tests
+/out
+/logs
+.env
+
+# Общие правила (как у остальных сервисов): локальные секреты, данные, логи.
+.env
+*.csv
+*.txt
+!CMakeLists.txt
+*.log
+*.lnk
+NUL
+__pycache__/
+*.pyc
+venv/
