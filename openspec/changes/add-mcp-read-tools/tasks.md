@@ -10,7 +10,8 @@
   По образцу wallet-ai (там уже библиотека + юнит-тесты): `wallet_mcp_core`, `wallet_mcp`, `wallet_mcp_tests`, OpenSSL без libpq и zlib. Сразу с полным `main` и тестами: `docker build --target test` → ctest 1/1, 76 тестов.
 - [x] 1.4 `Containerfile` (многостадийный, `BUILD_JOBS=3`, runtime с `tzdata` и `curl` для healthcheck, пользователь `appuser`); проверка — образ собирается, контейнер стартует и отвечает на `/healthz`
   Стадии deps/build/test/runtime как у wallet-ai. Образ собран (35.6 МБ), на изолированном стенде контейнер стартует и отвечает `/healthz` → `{"status":"ok"}`, `/version` с `git_commit` из `--build-arg`.
-- [ ] 1.5 GitHub Actions `ci.yml`, `release.yml`, `packages-cleanup.yml` по образцу wallet-report (образ `ghcr.io/wallettransactions/wallet-mcp`); проверка — CI зелёный на первом push, тег `v0.1.0-rc.1` публикует образ
+- [x] 1.5 GitHub Actions `ci.yml`, `release.yml`, `packages-cleanup.yml` по образцу wallet-report (образ `ghcr.io/wallettransactions/wallet-mcp`); проверка — CI зелёный на первом push, тег `v0.1.0-rc.1` публикует образ
+  Итог 2026-11-02: CI на PR #1 и на main — зелёный; тег `v0.1.0-rc.1` → Release success, образ `ghcr.io/wallettransactions/wallet-mcp:0.1.0-rc.1` поднят в test (`/version` 0.1.0, 4038c3e6).
   Файлы сделаны: `ci.yml` (юнит-тесты в debian:bookworm-slim с tzdata + сборка образа), `release.yml` и `packages-cleanup.yml` — без изменений, как у wallet-report/wallet-ai (образ берётся из `${GITHUB_REPOSITORY,,}`). CI — на PR ветки. Открыто: тег `v0.1.0-rc.1` и публикация образа — после мержа.
 
 ## 2. Служебные эндпоинты (`service-endpoints`)
