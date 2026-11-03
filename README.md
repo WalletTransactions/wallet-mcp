@@ -46,7 +46,7 @@ MCP-клиент ─ Bearer wmcp_… ─> wallet-gateway ─ /api/mcp/ ─> wall
 | POST | `/api/mcp/` | JSON-RPC 2.0: `initialize`, `ping`, `tools/list`, `tools/call`; уведомления — `202` без тела |
 | GET, DELETE | `/api/mcp/` | `405`: потока (SSE) и сессий нет |
 | GET | `/healthz` | `{"status":"ok"}`, зависимости не проверяет, в access-лог не пишется |
-| GET | `/version` | `{service, version, git_commit}` |
+| GET | `/version` | `{service, version, build, git_commit, started_at}`: `build` — тег образа (`APP_BUILD`, без него `<VERSION>-dev`), `started_at` — время запуска, UTC |
 | GET | `/metrics` | Prometheus, в access-лог не пишется |
 | GET | `/openapi.yaml`, `/docs` | спецификация и Swagger UI (вендоренный, без CDN) |
 
