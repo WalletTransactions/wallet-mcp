@@ -67,7 +67,8 @@ int main() {
     std::string log_dir = env_or("LOG_DIR", "");
     if (log_dir == "stdout" || log_dir == "-") log_dir.clear();
     applog::init(log_dir, "wallet-mcp");
-    metrics::set_build_info(version::kService, version::kVersion, version::kGitCommit);
+    metrics::set_build_info(version::kService, version::kVersion, version::kBuild,
+                            version::kGitCommit);
 
     std::string auth_url = strip_trailing_slash(
         env_required("AUTH_SERVICE_URL", "адрес google-auth для обмена MCP-токена, например http://127.0.0.1:8080"));
@@ -129,7 +130,7 @@ int main() {
         applog::clear_request_context();
     });
 
-    applog::info("wallet-mcp v" + std::string(version::kVersion) + " (" + std::string(version::kGitCommit) +
+    applog::info("wallet-mcp v" + std::string(version::kBuild) + " (" + std::string(version::kGitCommit) +
                  ") listening on http://" + host + ":" + std::to_string(port) + " (google-auth: " + auth_url +
                  ", wallet-report: " + report_url + ", MCP_TZ: " + tz_name + ")");
     if (!svr.listen(host, port)) {
