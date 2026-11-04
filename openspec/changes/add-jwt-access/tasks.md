@@ -17,8 +17,8 @@
 
 ## 4. Сквозная проверка на test-контуре
 
-- [ ] 4.1 После выката google-auth `add-token-exchange`: получить токен бота, обменять от имени wallet-ai на `wallet-mcp`, вызвать `tools/call` `spending_by_category` напрямую на `wallet-mcp:8088/api/mcp/`. Проверка: ответ совпадает с вызовом тем же пользователем через `wmcp_…`; в журнале `credential=jwt`, `actor=wallet-ai`
-- [ ] 4.2 Регрессия `wmcp_…`: LM Studio с прежним `mcp.json` отвечает на «сколько за няню в сентябре». Проверка: ответ как в README («Проверено на живой LM Studio»)
+- [x] 4.1 После выката google-auth `add-token-exchange`: получить токен бота, обменять от имени wallet-ai на `wallet-mcp`, вызвать `tools/call` `spending_by_category` напрямую на `wallet-mcp:8088/api/mcp/`. Проверка: ответ совпадает с вызовом тем же пользователем через `wmcp_…`; в журнале `credential=jwt`, `actor=wallet-ai` — проверено 2026-11-04 на test (wallet-mcp 0.2.0-rc.1, google-auth 0.2.0-rc.1), через гейтвей :8091, а не напрямую на :8088: subject — веб-сессия (как и у токена бота, `aud ∋ wallet-ai`, `ai:use`); `spending_by_category` за сентябрь 2026 через JWT и через `wmcp_…` — одинаковый текст (1245 символов, тот же SHA-256); в журнале `request_finished` — `credential: jwt`, `actor: wallet-ai`, `user_id` из `sub`; веб-сессия напрямую — `401` `jwt_wrong_audience`
+- [ ] 4.2 Регрессия `wmcp_…`: LM Studio с прежним `mcp.json` отвечает на «сколько за няню в сентябре». Проверка: ответ как в README («Проверено на живой LM Studio») — частично 2026-11-04 на test: `wmcp_…` скриптом (не LM Studio) — `initialize`, `tools/list` (6 инструментов), `list_wallets`, `balance`, `spending_by_category` → `200`; в журнале `credential: pat`. Вопрос в LM Studio не задавался
 
 ## Workflow follow-up
 
