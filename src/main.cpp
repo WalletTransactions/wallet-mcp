@@ -1,12 +1,12 @@
-// wallet-mcp — MCP-сервер стека (openspec/changes/add-mcp-read-tools):
-// MCP-клиент (LM Studio, позже любой) с персональным токеном `wmcp_…`
-// вызывает инструменты кошелька по Streamable HTTP за wallet-gateway
-// (/api/mcp/). Модель приносит клиент; сервис только исполняет
-// детерминированные инструменты.
+// wallet-mcp — MCP-сервер стека (openspec/specs): MCP-клиент (LM Studio,
+// позже любой) с персональным токеном `wmcp_…` или wallet-ai с JWT для
+// wallet-mcp (change add-jwt-access) вызывает инструменты кошелька по
+// Streamable HTTP (/api/mcp/). Модель приносит клиент; сервис только
+// исполняет детерминированные инструменты.
 //
 // Инвариант: только чтение. Данные — из wallet-report JWT пользователя,
-// который сервис получает обменом MCP-токена в google-auth. Своей базы нет,
-// прав на базу кошелька и инструментов записи нет.
+// который сервис получает обменом предъявленного токена в google-auth. Своей
+// базы нет, прав на базу кошелька и инструментов записи нет.
 
 #include <cstdlib>
 #include <ctime>
@@ -89,11 +89,18 @@ int main() {
     std::string host = env_or("HOST", "127.0.0.1");
     int port = std::stoi(env_or("PORT", "8088"));
 
-    auto auth_api = auth::make_http_api(auth_url);
+    // Приём JWT для wallet-mcp (add-jwt-access): без секрета обмена путь JWT
+    // выключен, `wmcp_…` работает как раньше. Ключи JWKS — из того же
+    // AUTH_SERVICE_URL, при первой проверке JWT, а не на старте.
+    std::string exchange_secret = env_or("AUTH_EXCHANGE_SECRET", "");
+    if (exchange_secret.empty()) applog::warn("JWT access disabled (AUTH_EXCHANGE_SECRET empty)");
+
+    auto auth_api = auth::make_http_api(auth_url, 3000, 5000, exchange_secret);
     mcpaccess::TokenCache tokens(*auth_api);
     auto reports_api = reports::make_http_api(report_url, "mcp_reports_errors_total");
     directory::Cache directory;
     mcphttp::Deps deps{tokens, *reports_api, directory, tz_name, version::kVersion};
+    if (!exchange_secret.empty()) deps.jwt_keys = mcpaccess::lazy_jwks(auth_url);
 
     httplib::Server svr;
     svr.set_pre_routing_handler(handle_pre_routing);
@@ -125,14 +132,20 @@ int main() {
             applog::clear_request_context();
             return;
         }
-        applog::info(req.method + " " + req.path + " -> " + std::to_string(res.status),
-                     {{"event", "request_finished"}, {"duration_ms", applog::request_duration_ms()}});
+        // credential и actor запроса к /api/mcp/ (спека mcp-access, «Журнал
+        // вызывающего»); у остальных ручек — пустой объект.
+        nlohmann::json fields = mcphttp::request_log_fields();
+        fields["event"] = "request_finished";
+        fields["duration_ms"] = applog::request_duration_ms();
+        applog::info(req.method + " " + req.path + " -> " + std::to_string(res.status), fields);
+        mcphttp::clear_request_log_fields();
         applog::clear_request_context();
     });
 
     applog::info("wallet-mcp v" + std::string(version::kBuild) + " (" + std::string(version::kGitCommit) +
                  ") listening on http://" + host + ":" + std::to_string(port) + " (google-auth: " + auth_url +
-                 ", wallet-report: " + report_url + ", MCP_TZ: " + tz_name + ")");
+                 ", wallet-report: " + report_url + ", MCP_TZ: " + tz_name +
+                 ", JWT access: " + (exchange_secret.empty() ? "off" : "on") + ")");
     if (!svr.listen(host, port)) {
         applog::error("не удалось запустить сервер на " + host + ":" + std::to_string(port) +
                       " (порт занят или недоступен?)");

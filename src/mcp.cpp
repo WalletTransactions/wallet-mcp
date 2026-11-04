@@ -61,13 +61,14 @@ Reply call_tool(const json& id, const json& params, const Handlers& h) {
     // Имя инструмента — из реестра, поэтому годится как лейбл и поле лога.
     // Аргументы, суммы и текст ответа в лог не пишутся.
     const char* result = tools::to_string(outcome.kind);
-    metrics2::inc_counter("mcp_tool_calls_total", "Вызовы инструментов MCP по имени и исходу.", "tool", name,
-                          "result", result);
+    metrics2::inc_counter("mcp_tool_calls_total", "Вызовы инструментов MCP по имени, исходу и виду учётных данных.",
+                          {{"tool", name}, {"result", result}, {"credential", h.credential}});
     metrics::observe_duration("mcp_tool_duration_seconds", "Длительность вызова инструмента MCP.", "tool", name,
                               seconds);
     applog::info("tool " + name + " -> " + result, {{"event", "mcp_tool_call"},
                                                      {"tool", name},
                                                      {"result", result},
+                                                     {"credential", h.credential},
                                                      {"duration_ms", seconds * 1000.0}});
 
     if (!invalid.empty()) return error_reply(id, kInvalidParams, invalid);

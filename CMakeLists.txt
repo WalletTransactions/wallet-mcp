@@ -9,8 +9,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # wallet-common, обновляется его scripts/vendor.sh; руками не править.
 set(WALLET_COMMON_DIR ${CMAKE_SOURCE_DIR}/third_party/wallet-common)
 
-# OpenSSL — SHA-256 токена (ключ кешей) и UUID v4 (Mcp-Session-Id). Базы у
-# сервиса нет, поэтому и libpq нет; JWT сервис не проверяет (design D3).
+# OpenSSL — SHA-256 токена (ключ кешей), UUID v4 (Mcp-Session-Id) и проверка
+# подписи RS256 входящего JWT для wallet-mcp (change add-jwt-access, D2).
+# Базы у сервиса нет, поэтому и libpq нет.
 find_package(OpenSSL REQUIRED)
 find_package(Threads REQUIRED)
 
@@ -73,6 +74,9 @@ add_library(wallet_mcp_core STATIC
     ${WALLET_COMMON_DIR}/util/base64.cpp
     ${WALLET_COMMON_DIR}/util/crypto.cpp
     ${WALLET_COMMON_DIR}/util/dotenv.cpp
+    ${WALLET_COMMON_DIR}/util/jwks.cpp
+    ${WALLET_COMMON_DIR}/util/jwt.cpp
+    ${WALLET_COMMON_DIR}/util/jwt_claims.cpp
     ${WALLET_COMMON_DIR}/util/log.cpp
     ${WALLET_COMMON_DIR}/util/metrics.cpp
     ${WALLET_COMMON_DIR}/util/uuid.cpp

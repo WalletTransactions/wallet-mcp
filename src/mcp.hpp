@@ -35,6 +35,9 @@ struct Handlers {
     std::string tz_name;
     std::string server_version;
     std::function<std::string()> new_session_id;
+    // Вид учётных данных запроса ("pat"/"jwt") — лейбл mcp_tool_calls_total
+    // и поле журнала (change add-jwt-access, D5).
+    std::string credential = "pat";
     // tools/call: имя уже проверено на существование; InvalidParams из
     // вызова становится -32602, остальные исключения идут наружу.
     std::function<tools::Outcome(const std::string& name, const nlohmann::json& arguments)> call_tool;

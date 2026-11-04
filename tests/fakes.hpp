@@ -19,9 +19,12 @@ namespace fakes {
 // Токен правильного формата: wmcp_ + 43 символа base64url.
 inline std::string token(char fill = 'A') { return "wmcp_" + std::string(43, fill); }
 
+// Оба обмена берут исход из next; calls считает оба, jwt_calls — только
+// /internal/token/exchange.
 struct FakeAuth : auth::AuthApi {
     auth::Exchange next;
     int calls = 0;
+    int jwt_calls = 0;
     std::vector<std::string> tokens;
     int counter = 0; // номер выданного JWT — видно, что обмен был новым
 
@@ -41,10 +44,27 @@ struct FakeAuth : auth::AuthApi {
         next.result = auth::Exchange::Result::Unavailable;
         next.error = "fake down";
     }
+    // 401 invalid_client на /internal/token/exchange (неверный секрет).
+    void invalid_client() {
+        next = {};
+        next.result = auth::Exchange::Result::Unavailable;
+        next.invalid_client = true;
+        next.error = "invalid_client";
+    }
     auth::Exchange exchange(const std::string& t) override {
         ++calls;
         tokens.push_back(t);
         auth::Exchange e = next;
+        e.invalid_client = false; // у /internal/mcp/token такого ответа нет
+        if (e.result == auth::Exchange::Result::Ok) e.access_token = "jwt-" + std::to_string(++counter);
+        return e;
+    }
+    auth::Exchange exchange_jwt(const std::string& t) override {
+        ++calls;
+        ++jwt_calls;
+        tokens.push_back(t);
+        auth::Exchange e = next;
+        e.user_id.clear(); // в ответе RFC 8693 user_id нет
         if (e.result == auth::Exchange::Result::Ok) e.access_token = "jwt-" + std::to_string(++counter);
         return e;
     }
