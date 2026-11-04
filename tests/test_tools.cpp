@@ -396,3 +396,20 @@ TEST(tools_invalid_params_throw) {
     CHECK_THROWS(e.call("list_categories", {{"as_user_id", "u-2"}}));
     CHECK(e.reports.requests.empty());
 }
+
+TEST(tools_name_with_parenthetical_note) {
+    CHECK_EQ(tools::without_parenthetical("Baby Sitter (Няня)"), std::string("Baby Sitter"));
+    CHECK_EQ(tools::without_parenthetical("Няня  (babysitter) "), std::string("Няня"));
+    CHECK_EQ(tools::without_parenthetical("Няня"), std::string("Няня"));
+    CHECK_EQ(tools::without_parenthetical("(Няня)"), std::string("(Няня)")); // только скобки — не пояснение
+    CHECK_EQ(tools::without_parenthetical("Кафе (на работе"), std::string("Кафе (на работе"));
+
+    // Модель передала имя со своим переводом в скобках — находится по имени до скобок.
+    Env e;
+    e.reports.set("/api/reports/expense-structure", structure({}, "0"));
+    e.ok("spending_by_category", with(kSeptember, {{"categories", {"Продукты (еда)"}}}));
+    CHECK_EQ(e.reports.count("/api/reports/expense-structure"), 1);
+    // Неоднозначность без скобок остаётся неоднозначностью.
+    std::string err = e.error("spending_by_category", with(kSeptember, {{"categories", {"каф (кофе)"}}}));
+    CHECK_EQ(err, "\"каф (кофе)\" подходит к нескольким: Кафе, Кафе на работе. Уточните.");
+}

@@ -357,6 +357,15 @@ private:
             load_accounts();
             m = text::resolve_name(name, named(wallets));
         }
+        // Модель дописывает к имени свой перевод: «Baby Sitter (Няня)». Имя
+        // со скобками целиком уже не нашлось — пробуем без пояснения.
+        if (m.kind == text::Match::Kind::NotFound) {
+            std::string base = without_parenthetical(name);
+            if (!base.empty() && base != name) {
+                text::Match b = text::resolve_name(base, named(wallets));
+                if (b.kind != text::Match::Kind::NotFound) m = b;
+            }
+        }
         if (m.kind == text::Match::Kind::Found) return m.found;
         if (m.kind == text::Match::Kind::Ambiguous) {
             std::vector<std::string> names;
@@ -645,6 +654,16 @@ ojson search_operations(Call& c, const json& args) {
 const json& list() { return registry(); }
 
 bool exists(const std::string& name) { return schema_of(name) != nullptr; }
+
+std::string without_parenthetical(const std::string& name) {
+    std::size_t end = name.find_last_not_of(" \t");
+    if (end == std::string::npos || name[end] != ')') return name;
+    std::size_t open = name.rfind('(', end);
+    if (open == std::string::npos || open == 0) return name; // «(Няня)» целиком — не пояснение
+    std::size_t last = name.find_last_not_of(" \t", open - 1);
+    if (last == std::string::npos) return name;
+    return name.substr(0, last + 1);
+}
 
 void validate(const std::string& name, const json& arguments) {
     const json* schema = schema_of(name);

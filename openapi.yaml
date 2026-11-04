@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: wallet-mcp
-  version: "0.2.0"
+  version: "0.2.1"
   description: |
     MCP-сервер стека WalletTransactions (транспорт MCP Streamable HTTP,
     JSON-RPC 2.0): MCP-клиент (LM Studio, позже любой) с персональным

@@ -111,6 +111,14 @@ TEST(mcp_instructions_text) {
     CHECK(text.find("Не считай суммы сам — используй результаты инструментов.") != std::string::npos);
     CHECK(text.find("ГГГГ-ММ-ДД") != std::string::npos);
     CHECK(text.find("переспроси") != std::string::npos);
+    // Готовые периоды от сегодняшней даты, без примера с чужим месяцем.
+    CHECK(text.find("«этот месяц» (октябрь) — from 2026-10-01, to 2026-10-31") != std::string::npos);
+    CHECK(text.find("«прошлый месяц» (сентябрь) — from 2026-09-01, to 2026-09-30") != std::string::npos);
+    CHECK(text.find("без своих пояснений в скобках") != std::string::npos);
+
+    std::string nov = mcp::instructions(*dates::parse("2026-11-04"), "UTC");
+    CHECK(nov.find("«прошлый месяц» (октябрь) — from 2026-10-01, to 2026-10-31") != std::string::npos);
+    CHECK(nov.find("2026-09-01") == std::string::npos);
 }
 
 TEST(mcp_tools_list_has_exactly_six_read_tools) {
