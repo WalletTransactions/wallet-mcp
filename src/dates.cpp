@@ -82,6 +82,20 @@ std::string weekday_ru(const Date& d) {
     return kNames[iso_weekday(d) - 1];
 }
 
+std::string month_name_ru(int month) {
+    static const char* kNames[] = {"январь", "февраль", "март",     "апрель",  "май",    "июнь",
+                                   "июль",   "август",  "сентябрь", "октябрь", "ноябрь", "декабрь"};
+    return month >= 1 && month <= 12 ? kNames[month - 1] : "";
+}
+
+Range this_month(const Date& today) { return {{today.year, today.month, 1}, today}; }
+
+Range previous_month(const Date& today) {
+    int y = today.month == 1 ? today.year - 1 : today.year;
+    int m = today.month == 1 ? 12 : today.month - 1;
+    return {{y, m, 1}, {y, m, days_in_month(y, m)}};
+}
+
 std::string period_from(const Date& d) { return to_string(d) + " 00:00:00"; }
 
 std::string period_to(const Date& d) { return to_string(d) + " 23:59:59.999999"; }

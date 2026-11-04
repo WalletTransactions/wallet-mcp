@@ -76,3 +76,20 @@ TEST(dates_today_in_process_tz) {
     }
     tzset();
 }
+
+TEST(dates_month_ranges) {
+    auto d = [](const char* s) { return *dates::parse(s); };
+    dates::Range prev = dates::previous_month(d("2026-11-04"));
+    CHECK_EQ(dates::to_string(prev.from), std::string("2026-10-01"));
+    CHECK_EQ(dates::to_string(prev.to), std::string("2026-10-31"));
+    dates::Range cur = dates::this_month(d("2026-11-04"));
+    CHECK_EQ(dates::to_string(cur.from), std::string("2026-11-01"));
+    CHECK_EQ(dates::to_string(cur.to), std::string("2026-11-04"));
+    // Через Новый год и в феврале високосного года.
+    prev = dates::previous_month(d("2027-01-15"));
+    CHECK_EQ(dates::to_string(prev.from), std::string("2026-12-01"));
+    CHECK_EQ(dates::to_string(prev.to), std::string("2026-12-31"));
+    CHECK_EQ(dates::to_string(dates::previous_month(d("2028-03-01")).to), std::string("2028-02-29"));
+    CHECK_EQ(dates::month_name_ru(10), std::string("октябрь"));
+    CHECK_EQ(dates::month_name_ru(13), std::string(""));
+}

@@ -43,6 +43,10 @@ const nlohmann::json& list();
 
 bool exists(const std::string& name);
 
+// «Baby Sitter (Няня)» → «Baby Sitter»: пояснение в скобках в конце имени
+// (модель дописывает перевод) отрезается. Без скобок в конце — как есть.
+std::string without_parenthetical(const std::string& name);
+
 // Проверка аргументов по inputSchema инструмента: неизвестный инструмент,
 // лишний ключ, неверный тип, нет обязательного, вне enum/диапазона —
 // InvalidParams. null у необязательного аргумента — как его отсутствие.

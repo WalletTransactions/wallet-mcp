@@ -35,6 +35,18 @@ int iso_weekday(const Date& d);
 // «понедельник» … «воскресенье».
 std::string weekday_ru(const Date& d);
 
+// «январь» … «декабрь» (именительный падеж); вне 1..12 — пусто.
+std::string month_name_ru(int month);
+
+// Готовые периоды от сегодняшней даты для instructions: модель не считает
+// календарь сама (маленькая модель копирует даты из примера).
+struct Range {
+    Date from;
+    Date to; // включительно
+};
+Range this_month(const Date& today);     // с 1-го числа по сегодня
+Range previous_month(const Date& today); // весь прошлый месяц
+
 // Границы периода wallet-report включительны (periodFrom/periodTo):
 // "ГГГГ-ММ-ДД 00:00:00" и "ГГГГ-ММ-ДД 23:59:59.999999".
 std::string period_from(const Date& d);
