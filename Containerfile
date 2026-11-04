@@ -2,8 +2,8 @@
 #
 # Multi-stage build wallet-mcp — тот же шаблон, что у wallet-ai и
 # wallet-telegram: deps -> build (образ), deps -> test (юнит-тесты,
-# `--target test`), runtime. Базы нет — libpq не нужен; OpenSSL — SHA-256 и
-# UUID v4. tzdata в рантайме — пояс MCP_TZ (design D7), curl — для
+# `--target test`), runtime. Базы нет — libpq не нужен; OpenSSL — SHA-256,
+# UUID v4 и проверка RS256 входящего JWT (add-jwt-access). tzdata в рантайме — пояс MCP_TZ (design D7), curl — для
 # healthcheck в compose (GET /healthz).
 
 FROM debian:bookworm-slim AS deps

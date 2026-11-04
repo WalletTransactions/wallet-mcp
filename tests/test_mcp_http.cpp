@@ -5,8 +5,10 @@
 #include "fakes.hpp"
 #include "httplib.h"
 #include "mcp_http.hpp"
+#include "metrics2.hpp"
 #include "nlohmann/json.hpp"
 #include "test_framework.hpp"
+#include "test_keys.hpp"
 #include "util/log.hpp"
 
 using nlohmann::json;
@@ -20,9 +22,18 @@ struct Env {
     directory::Cache directory;
     mcphttp::Deps deps{tokens, reports, directory, "UTC", "0.1.0", [] { return std::time_t{1793448000}; }};
 
-    Env() { reports.set("/api/reports/accounts", fakes::accounts_body()); }
+    int jwks_lookups = 0;
+
+    // Приём JWT включён (AUTH_EXCHANGE_SECRET задан), JWKS — тестовый ключ.
+    Env() {
+        reports.set("/api/reports/accounts", fakes::accounts_body());
+        deps.jwt_keys = testkeys::jwks_lookup(&jwks_lookups);
+    }
     // Контекст лога (user_id, route) — thread_local, как в сервере после set_logger.
-    ~Env() { applog::clear_request_context(); }
+    ~Env() {
+        applog::clear_request_context();
+        mcphttp::clear_request_log_fields();
+    }
 
     httplib::Response post(const std::string& body, const std::string& authorization,
                            const httplib::Headers& extra = {}) {
@@ -215,4 +226,135 @@ TEST(http_server_413_before_auth_and_405_on_get) {
 
     svr.stop();
     th.join();
+}
+
+// --- JWT для wallet-mcp (change add-jwt-access) ---
+
+namespace {
+
+const std::string kListCategories =
+    R"({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"list_categories"}})";
+
+int metric(const std::string& series) {
+    std::string text = metrics2::render();
+    auto pos = text.find(series + " ");
+    if (pos == std::string::npos) return 0;
+    return std::stoi(text.substr(pos + series.size() + 1));
+}
+
+} // namespace
+
+TEST(http_jwt_for_wallet_mcp_is_served_with_exchanged_token) {
+    Env e;
+    std::string token = testkeys::mcp_jwt();
+    fakes::CaptureLog log;
+    httplib::Response res = e.post(kListCategories, "Bearer " + token);
+    CHECK_EQ(res.status, 200);
+    CHECK_EQ(json::parse(res.body)["result"]["isError"], false);
+    // Обмен RFC 8693, а не /internal/mcp/token; в wallet-report — выданный JWT.
+    CHECK_EQ(e.auth.jwt_calls, 1);
+    CHECK_EQ(e.auth.calls, 1);
+    REQUIRE(!e.reports.jwts.empty());
+    CHECK_EQ(e.reports.jwts.back(), "jwt-1");
+    for (const auto& j : e.reports.jwts) CHECK(j != token);
+
+    // Журнал вызывающего: credential, actor, user_id из sub; токенов нет.
+    json fields = mcphttp::request_log_fields();
+    CHECK_EQ(fields["credential"], "jwt");
+    CHECK_EQ(fields["actor"], "wallet-ai");
+    CHECK_EQ(applog::current_user_id(), testkeys::kSub);
+    std::string text = log.text();
+    CHECK(text.find("\"credential\":\"jwt\"") != std::string::npos);
+    CHECK(text.find(token) == std::string::npos);
+    CHECK(text.find(token.substr(0, token.find('.'))) == std::string::npos);
+    CHECK(text.find("jwt-1") == std::string::npos);
+
+    // Второй вызов тем же JWT — из кеша.
+    CHECK_EQ(e.post(kListCategories, "Bearer " + token).status, 200);
+    CHECK_EQ(e.auth.jwt_calls, 1);
+}
+
+TEST(http_web_session_jwt_401_without_exchange) {
+    Env e;
+    fakes::CaptureLog log;
+    check_invalid_token(e.post(kInit, "Bearer " + testkeys::google_auth().sign(testkeys::web_claims())));
+    CHECK_EQ(e.auth.calls, 0);
+    CHECK(log.text().find("jwt_wrong_audience") != std::string::npos);
+}
+
+TEST(http_jwt_other_audience_or_scope_or_signature_401) {
+    Env e;
+    auto claims = testkeys::mcp_claims();
+    claims["aud"] = json::array({"wallet-report"});
+    check_invalid_token(e.post(kInit, "Bearer " + testkeys::google_auth().sign(claims)));
+    claims = testkeys::mcp_claims();
+    claims["scope"] = "ai:use";
+    check_invalid_token(e.post(kInit, "Bearer " + testkeys::google_auth().sign(claims)));
+    check_invalid_token(e.post(kInit, "Bearer " + testkeys::foreign().sign(testkeys::mcp_claims())));
+    check_invalid_token(e.post(kInit, "Bearer " + testkeys::mcp_jwt(-1)));
+    CHECK_EQ(e.auth.calls, 0);
+}
+
+TEST(http_jwt_disabled_without_exchange_secret) {
+    Env e;
+    e.deps.jwt_keys = nullptr;
+    check_invalid_token(e.post(kInit, "Bearer " + testkeys::mcp_jwt()));
+    CHECK_EQ(e.auth.calls, 0);
+    CHECK_EQ(e.jwks_lookups, 0);
+    // wmcp_… — как раньше.
+    CHECK_EQ(e.post(kInit, "Bearer " + fakes::token()).status, 200);
+}
+
+TEST(http_jwt_exchange_rejected_401) {
+    Env e;
+    e.auth.invalid(); // google-auth: 400 invalid_grant
+    check_invalid_token(e.post(kInit, "Bearer " + testkeys::mcp_jwt()));
+    CHECK_EQ(e.auth.jwt_calls, 1);
+}
+
+TEST(http_jwt_invalid_client_503_and_pat_still_works) {
+    Env e;
+    e.auth.invalid_client();
+    fakes::CaptureLog log;
+    httplib::Response res = e.post(kInit, "Bearer " + testkeys::mcp_jwt());
+    CHECK_EQ(res.status, 503);
+    CHECK_EQ(json::parse(res.body)["error"], "unavailable");
+    std::string text = log.text();
+    CHECK(text.find("token_exchange_invalid_client") != std::string::npos);
+    CHECK(text.find("\"level\":\"error\"") != std::string::npos);
+    // Тот же google-auth на /internal/mcp/token отвечает 200 — wmcp_… работает.
+    e.auth.ok();
+    CHECK_EQ(e.post(kInit, "Bearer " + fakes::token()).status, 200);
+}
+
+TEST(http_jwt_report_401_retry) {
+    Env e;
+    e.reports.set("/api/reports/accounts", {{"error", "unauthorized"}}, 401);
+    e.reports.push("/api/reports/accounts", fakes::accounts_body(), 200);
+    httplib::Response res = e.post(kListCategories, "Bearer " + testkeys::mcp_jwt());
+    CHECK_EQ(res.status, 200);
+    CHECK_EQ(e.auth.jwt_calls, 2);
+}
+
+TEST(http_metrics_have_credential_and_kind) {
+    Env e;
+    int pat_calls = metric("mcp_tool_calls_total{tool=\"list_categories\",result=\"ok\",credential=\"pat\"}");
+    int jwt_calls = metric("mcp_tool_calls_total{tool=\"list_categories\",result=\"ok\",credential=\"jwt\"}");
+    int jwt_ex = metric("mcp_token_exchange_total{result=\"ok\",kind=\"jwt\"}");
+    int pat_ex = metric("mcp_token_exchange_total{result=\"ok\",kind=\"pat\"}");
+    CHECK_EQ(e.post(kListCategories, "Bearer " + fakes::token('P')).status, 200);
+    CHECK_EQ(mcphttp::request_log_fields()["credential"], "pat");
+    CHECK(!mcphttp::request_log_fields().contains("actor"));
+    CHECK_EQ(e.post(kListCategories, "Bearer " + testkeys::mcp_jwt()).status, 200);
+    CHECK_EQ(metric("mcp_tool_calls_total{tool=\"list_categories\",result=\"ok\",credential=\"pat\"}") - pat_calls, 1);
+    CHECK_EQ(metric("mcp_tool_calls_total{tool=\"list_categories\",result=\"ok\",credential=\"jwt\"}") - jwt_calls, 1);
+    CHECK_EQ(metric("mcp_token_exchange_total{result=\"ok\",kind=\"jwt\"}") - jwt_ex, 1);
+    CHECK_EQ(metric("mcp_token_exchange_total{result=\"ok\",kind=\"pat\"}") - pat_ex, 1);
+}
+
+TEST(http_rejected_request_has_no_credential_fields) {
+    Env e;
+    e.post(kInit, "Bearer " + testkeys::mcp_jwt()); // заполнил поля
+    check_invalid_token(e.post(kInit, ""));
+    CHECK(mcphttp::request_log_fields().empty());
 }

@@ -7,7 +7,9 @@ Change — [`openspec/changes/add-mcp-read-tools`](openspec/changes/add-mcp-read
 
 ```
 MCP-клиент ─ Bearer wmcp_… ─> wallet-gateway ─ /api/mcp/ ─> wallet-mcp ─ JWT ─> wallet-report
-                                                               └─ POST /internal/mcp/token ─> google-auth
+wallet-ai  ─ Bearer JWT (aud wallet-mcp) ────────────────────>    │
+                                                                  ├─ POST /internal/mcp/token ─────> google-auth
+                                                                  └─ POST /internal/token/exchange ─> google-auth
 ```
 
 **Только чтение.** Данные берутся из wallet-report токеном пользователя.
@@ -19,19 +21,34 @@ MCP-клиент ─ Bearer wmcp_… ─> wallet-gateway ─ /api/mcp/ ─> wall
 ## Доступ
 
 - Каждый запрос к `/api/mcp/`, включая `initialize` и уведомления, несёт
-  `Authorization: Bearer wmcp_…`. Персональный токен выпускается в
-  веб-кабинете (google-auth `POST /auth/mcp-tokens`, change
-  `add-mcp-personal-tokens`).
-- Сервис меняет токен на JWT через google-auth `POST /internal/mcp/token`
-  (aud `wallet-report`, scope `reports:read`, 300 с). Ручка служебная:
-  гейтвей её не проксирует. JWT кешируется в памяти по SHA-256 токена, пока
-  до `exp` больше 30 с. Сам токен сервис не хранит, подпись JWT не
-  проверяет (это делает wallet-report).
-- Отказы: нет токена, токен не `wmcp_…` или google-auth ответил `401` —
+  `Authorization: Bearer <токен>` одного из двух видов (вид — по префиксу):
+  - **`wmcp_…`** — персональный токен из веб-кабинета (google-auth
+    `POST /auth/mcp-tokens`, change `add-mcp-personal-tokens`). Так
+    подключаются LM Studio и другие MCP-клиенты;
+  - **JWT для wallet-mcp** — RS256 от google-auth с `aud` ∋ `wallet-mcp` и
+    `scope` ∋ `mcp:read`. Его получает обменом wallet-ai (чат), change
+    `add-jwt-access`. Сервис проверяет подпись по JWKS google-auth
+    (`AUTH_SERVICE_URL/.well-known/jwks.json`, ключи грузятся при первом JWT),
+    `iss`, `aud`, `scope` и `exp` локально и только потом идёт в google-auth.
+    JWT веб-сессии (`aud` без `wallet-mcp`) получает `401` без обмена.
+    Приём JWT включается переменной `AUTH_EXCHANGE_SECRET`.
+- Предъявленный токен в wallet-report не уходит. Сервис получает свой JWT
+  для wallet-report (aud `wallet-report`, scope `reports:read`, до 300 с):
+  для `wmcp_…` — `POST /internal/mcp/token`, для JWT — обменом RFC 8693
+  `POST /internal/token/exchange` (actor `wallet-mcp`,
+  `audience=wallet-report`, `X-Service-Secret` из `AUTH_EXCHANGE_SECRET`).
+  Ручки служебные: гейтвей их не проксирует. JWT кешируется в памяти по
+  SHA-256 предъявленного токена, пока до `exp` больше 30 с; для входящего JWT
+  запись не живёт дольше его собственного `exp`. Сам токен сервис не хранит,
+  подпись JWT для wallet-report не проверяет (это делает wallet-report).
+- Отказы: нет токена, токен не `wmcp_…` и не годный JWT для wallet-mcp,
+  google-auth ответил `401` на `/internal/mcp/token` или `400` на обмен —
   `401 {"error":"invalid_token","message":"MCP-токен недействителен или истёк — выпустите новый в веб-кабинете: Настройки → Устройства"}`
-  с `WWW-Authenticate: Bearer`. google-auth недоступен — `503`. Если
-  wallet-report ответил `401` на JWT из кеша, сервис один раз меняет токен
-  заново и повторяет вызов.
+  с `WWW-Authenticate: Bearer`. google-auth недоступен — `503`. Неверный
+  `AUTH_EXCHANGE_SECRET` (google-auth: `401 invalid_client`) — тоже `503` и
+  ошибка `token_exchange_invalid_client` в журнале: это конфигурация, а не
+  токен. Если wallet-report ответил `401` на JWT из кеша, сервис один раз
+  меняет токен заново и повторяет вызов.
 - Отзыв MCP-сессии в «Моих устройствах» действует не позже чем через 5 минут:
   столько живёт уже выданный JWT.
 - `Mcp-Session-Id` выдаётся на `initialize` и личность не подтверждает.
@@ -117,7 +134,8 @@ HTTP `200`: `-32700` (не JSON), `-32600` (не JSON-RPC 2.0, батч), `-3260
 
 | Переменная | По умолчанию | Что |
 | --- | --- | --- |
-| `AUTH_SERVICE_URL` | — (обязательна) | google-auth для `POST /internal/mcp/token`, по сети контура |
+| `AUTH_SERVICE_URL` | — (обязательна) | google-auth по сети контура: `POST /internal/mcp/token`, `POST /internal/token/exchange`, JWKS |
+| `AUTH_EXCHANGE_SECRET` | пусто | `X-Service-Secret` wallet-mcp для обмена JWT (секрет `wallet-mcp` в `TOKEN_EXCHANGE_SECRETS` google-auth). Пусто — приём JWT выключен, в логе старта `JWT access disabled (AUTH_EXCHANGE_SECRET empty)`, `wmcp_…` работает |
 | `WALLET_REPORT_URL` | — (обязательна) | wallet-report напрямую, не через гейтвей |
 | `PORT` | `8088` | |
 | `HOST` | `127.0.0.1` | в контейнере — `0.0.0.0` |
@@ -136,22 +154,26 @@ HTTP `200`: `-32700` (не JSON), `-32600` (не JSON-RPC 2.0, батч), `-3260
 
 JSON-логи (`util/log` wallet-common) с `trace_id` из `X-Trace-Id`, сервис
 свой не порождает. На вызов инструмента — строка `mcp_tool_call` с
-`user_id`, `tool`, `result` и `duration_ms`. Аргументы, суммы, имена
-счетов, комментарии, тела запросов и ответов, токены и их хэши в лог не
-пишутся. Отказ по токену — `mcp_auth_rejected` с причиной
-(`missing`/`format`/`google_auth`/`wallet_report`).
+`user_id`, `tool`, `result`, `credential` и `duration_ms`. В
+`request_finished` запроса к `/api/mcp/` — `credential` (`pat` для `wmcp_…`,
+`jwt` для JWT) и для JWT `actor` — цепочка `act` через запятую (из чата —
+`wallet-ai`). Аргументы, суммы, имена счетов, комментарии, тела запросов и
+ответов, токены и их хэши в лог не пишутся. Отказ по токену —
+`mcp_auth_rejected` с причиной (`missing`/`format`/`google_auth`/
+`wallet_report`, для JWT — `jwt_malformed`/`jwt_unknown_key`/`jwt_signature`/
+`jwt_expired`/`jwt_wrong_audience`/`jwt_insufficient_scope`/… ).
 
 Метрики:
 
 - `build_info`, `http_requests_total`, `http_request_duration_seconds`;
-- `mcp_tool_calls_total{tool,result}` — `ok`/`tool_error`/`unavailable`;
+- `mcp_tool_calls_total{tool,result,credential}` — `ok`/`tool_error`/`unavailable`, `pat`/`jwt`;
 - `mcp_tool_duration_seconds{tool}`;
-- `mcp_token_exchange_total{result}` — `ok`/`invalid`/`unavailable`;
+- `mcp_token_exchange_total{result,kind}` — `ok`/`invalid`/`unavailable`, `pat`/`jwt`;
 - `mcp_token_cache_total{result}` — `hit`/`miss`;
 - `mcp_reports_errors_total{kind}` — `network`, `http_<код>`.
 
-Счётчик с двумя лейблами — `src/metrics2.*`: `util/metrics` wallet-common
-умеет только один лейбл.
+Счётчики с несколькими лейблами — `src/metrics2.*`: `util/metrics`
+wallet-common умеет только один лейбл.
 
 ## Сборка и тесты
 

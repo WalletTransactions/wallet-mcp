@@ -1,18 +1,27 @@
 openapi: 3.1.0
 info:
   title: wallet-mcp
-  version: "0.1.0"
+  version: "0.2.0"
   description: |
     MCP-сервер стека WalletTransactions (транспорт MCP Streamable HTTP,
     JSON-RPC 2.0): MCP-клиент (LM Studio, позже любой) с персональным
-    токеном `wmcp_…` вызывает инструменты кошелька **только для чтения**.
+    токеном `wmcp_…` или wallet-ai с JWT для wallet-mcp вызывает инструменты
+    кошелька **только для чтения**.
     Модель приносит клиент; сервис исполняет детерминированные инструменты,
     данные берёт из wallet-report JWT пользователя.
 
-    Каждый запрос к `/api/mcp/` аутентифицируется сам: `Authorization: Bearer
-    wmcp_…` → обмен в google-auth (`POST /internal/mcp/token`, operationId
-    `exchangeMcpToken` в openapi.yaml google-auth) → JWT на 300 с (кеш в
-    памяти по SHA-256 токена). JWT-гейт wallet-gateway этот префикс не
+    Каждый запрос к `/api/mcp/` аутентифицируется сам. `Authorization: Bearer`
+    одного из двух видов (по префиксу):
+    - `wmcp_…` → обмен в google-auth (`POST /internal/mcp/token`, operationId
+      `exchangeMcpToken` в openapi.yaml google-auth);
+    - JWT RS256 от google-auth с `aud` ∋ `wallet-mcp` и `scope` ∋ `mcp:read`
+      (проверка локально по JWKS) → обмен RFC 8693
+      (`POST /internal/token/exchange`, actor `wallet-mcp`,
+      `audience=wallet-report`). Включается `AUTH_EXCHANGE_SECRET`.
+
+    Результат — JWT для wallet-report до 300 с (кеш в памяти по SHA-256
+    предъявленного токена, не дольше `exp` входящего JWT); предъявленный
+    токен в wallet-report не уходит. JWT-гейт wallet-gateway этот префикс не
     проверяет. `Mcp-Session-Id` личность не подтверждает.
 
     Инструменты, их аргументы и ответы описывает сам MCP (`tools/list`), а
@@ -42,9 +51,12 @@ paths:
         Потоковых ответов (SSE) нет: на запрос — один JSON-ответ.
 
         Порядок проверок: тело больше 64 КБ — `413` (до аутентификации);
-        нет `Authorization: Bearer wmcp_…` или токен не того формата — `401`
-        (в google-auth не отправляется); google-auth ответил `401` — `401`;
-        google-auth недоступен — `503`; заголовок `MCP-Protocol-Version` с
+        нет `Authorization: Bearer` или токен не `wmcp_…` и не годный JWT для
+        wallet-mcp (подпись, `iss`, `aud`, `scope`, `exp`) — `401` (в
+        google-auth не отправляется); google-auth отказал в обмене (`401` на
+        `/internal/mcp/token`, `400` на `/internal/token/exchange`) — `401`;
+        google-auth недоступен или отверг `AUTH_EXCHANGE_SECRET`
+        (`invalid_client`) — `503`; заголовок `MCP-Protocol-Version` с
         незнакомой версией — `400`; дальше — разбор JSON-RPC.
 
         Ошибки протокола — JSON-RPC-ошибка с HTTP `200`: `-32700` (не JSON),
@@ -59,7 +71,7 @@ paths:
         рукопожатия) не поддерживается: клиент, умеющий обе, по `400` на
         незнакомый `MCP-Protocol-Version` переходит на `initialize`.
       tags: [mcp]
-      security: [{mcpToken: []}]
+      security: [{mcpToken: []}, {mcpJwt: []}]
       parameters:
         - name: MCP-Protocol-Version
           in: header
@@ -119,8 +131,10 @@ paths:
               schema: {$ref: "#/components/schemas/JsonRpcResponse"}
         "401":
           description: |
-            Нет токена, токен не `wmcp_…`, отозван или истёк (google-auth ответил
-            `401`), либо wallet-report дважды отказал JWT. Заголовок
+            Нет токена; токен не `wmcp_…` и не годный JWT для wallet-mcp;
+            отозван или истёк (google-auth ответил `401` на
+            `/internal/mcp/token` или `400` на `/internal/token/exchange`);
+            либо wallet-report дважды отказал JWT. Заголовок
             `WWW-Authenticate: Bearer`.
           headers:
             WWW-Authenticate:
@@ -133,7 +147,10 @@ paths:
         "413":
           description: Тело больше 64 КБ — не разбирается, токен не проверяется.
         "503":
-          description: google-auth не ответил или ответил не `200`/`401` — токен недействительным не считается.
+          description: |
+            google-auth не ответил или ответил кодом вне контракта, либо отверг
+            `AUTH_EXCHANGE_SECRET` (`401 invalid_client` на обмен) — токен
+            недействительным не считается.
           content:
             application/json:
               schema: {$ref: "#/components/schemas/AuthError"}
@@ -222,9 +239,10 @@ paths:
       summary: Метрики Prometheus (текстовый формат 0.0.4)
       description: |
         `build_info`, `http_requests_total`, `http_request_duration_seconds`,
-        `mcp_tool_calls_total{tool,result}` (`ok`/`tool_error`/`unavailable`),
-        `mcp_tool_duration_seconds{tool}`, `mcp_token_exchange_total{result}`
-        (`ok`/`invalid`/`unavailable`), `mcp_token_cache_total{result}`
+        `mcp_tool_calls_total{tool,result,credential}` (`ok`/`tool_error`/`unavailable`;
+        `pat`/`jwt`), `mcp_tool_duration_seconds{tool}`,
+        `mcp_token_exchange_total{result,kind}` (`ok`/`invalid`/`unavailable`;
+        `pat`/`jwt`), `mcp_token_cache_total{result}`
         (`hit`/`miss`), `mcp_reports_errors_total{kind}` (`network`,
         `http_<код>`). В access-лог не пишется.
       tags: [docs]
@@ -241,6 +259,11 @@ components:
       type: http
       scheme: bearer
       description: "Персональный MCP-токен `wmcp_<43 символа base64url>` — выпускается в веб-кабинете (google-auth `POST /auth/mcp-tokens`). Не JWT."
+    mcpJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: "JWT RS256 от google-auth с `aud` ∋ `wallet-mcp` и `scope` ∋ `mcp:read` — выдаётся обменом RFC 8693 (wallet-ai, google-auth `POST /internal/token/exchange`). JWT веб-сессии не подходит. Принимается, только если задан `AUTH_EXCHANGE_SECRET`."
 
   schemas:
     JsonRpcRequest:

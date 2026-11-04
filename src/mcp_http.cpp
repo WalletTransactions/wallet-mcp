@@ -15,6 +15,8 @@ namespace {
 
 constexpr const char* kJson = "application/json";
 
+thread_local nlohmann::json t_log_fields = nlohmann::json::object();
+
 // Отказ по токену. В лог — только причина: ни токена, ни его хэша.
 void reject(httplib::Response& res, const char* reason) {
     applog::warn("MCP-запрос отклонён: токен недействителен", {{"event", "mcp_auth_rejected"}, {"reason", reason}});
@@ -39,17 +41,38 @@ void method_not_allowed(const httplib::Request& req, httplib::Response& res) {
 
 } // namespace
 
+nlohmann::json request_log_fields() { return t_log_fields; }
+
+void clear_request_log_fields() { t_log_fields = nlohmann::json::object(); }
+
 void handle_post(const httplib::Request& req, httplib::Response& res, Deps& deps) {
     applog::set_route("POST /api/mcp/");
 
+    clear_request_log_fields();
     std::string token = mcpaccess::bearer_token(req.get_header_value("Authorization"));
     if (token.empty()) return reject(res, "missing");
-    if (!mcpaccess::looks_like_mcp_token(token)) return reject(res, "format");
 
-    mcpaccess::Session session = deps.tokens.get(token);
+    // Вид учётных данных — по префиксу (D1): форматы не пересекаются.
+    mcpaccess::Presented presented;
+    std::string actor;
+    if (mcpaccess::looks_like_mcp_token(token)) {
+        presented = mcpaccess::Presented::pat(std::move(token));
+    } else {
+        if (!deps.jwt_keys) return reject(res, "format");
+        // Проверка до обмена (D2): мусор и JWT веб-сессии в google-auth не идут.
+        mcpaccess::VerifiedJwt v = mcpaccess::verify_jwt(token, deps.jwt_keys);
+        if (!v.ok) return reject(res, v.reason.c_str());
+        presented = {std::move(token), mcpaccess::Credential::Jwt, v.user_id, v.exp};
+        actor = std::move(v.actor);
+    }
+    const char* credential = mcpaccess::to_string(presented.kind);
+
+    mcpaccess::Session session = deps.tokens.get(presented);
     if (session.result == auth::Exchange::Result::Invalid) return reject(res, "google_auth");
     if (session.result == auth::Exchange::Result::Unavailable) return auth_unavailable(res);
     if (!session.user_id.empty()) applog::set_user(session.user_id);
+    t_log_fields = {{"credential", credential}};
+    if (!actor.empty()) t_log_fields["actor"] = actor;
 
     // Клиент ревизии 2025-06-18+ шлёт версию после рукопожатия; незнакомую —
     // 400 (так велит 2025-06-18). Клиент новых ревизий без initialize
@@ -69,13 +92,14 @@ void handle_post(const httplib::Request& req, httplib::Response& res, Deps& deps
         return;
     }
 
-    mcpaccess::UserReports reports(deps.reports, deps.tokens, token, session);
+    mcpaccess::UserReports reports(deps.reports, deps.tokens, std::move(presented), session);
     tools::Context ctx{reports, deps.directory, dates::today(deps.now())};
     mcp::Handlers h;
     h.today = ctx.today;
     h.tz_name = deps.tz_name;
     h.server_version = deps.server_version;
     h.new_session_id = [] { return uuidgen::v4(); };
+    h.credential = credential;
     h.call_tool = [&ctx](const std::string& name, const json& arguments) { return tools::call(name, arguments, ctx); };
 
     mcp::Reply reply;
