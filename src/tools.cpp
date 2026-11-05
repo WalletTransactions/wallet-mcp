@@ -758,7 +758,8 @@ ojson spending_by_category_by_month(Call& c, const json& args) {
     for (const auto& r : body["categories"]) {
         if (!r.is_object() || !r.contains("account_uuid") || !r["account_uuid"].is_string()) continue;
         MatrixRow row{r["account_uuid"].get<std::string>(), r.value("account_name", ""),
-                      r.contains("total_eq") && r.contains("op_count"), r.value("total_eq", json(nullptr)),
+                      // Итог категории — amount_eq из SQL (как у /expense-structure).
+                      r.contains("amount_eq") && r.contains("op_count"), r.value("amount_eq", json(nullptr)),
                       op_count(r), {}};
         if (r.contains("months") && r["months"].is_array()) {
             for (const auto& m : r["months"]) {

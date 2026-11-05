@@ -160,25 +160,25 @@ inline nlohmann::json accounts_body() {
 }
 
 // Ответ GET /api/reports/expense-by-category-by-month (wallet-report change
-// add-category-month-analytics). Форма — допущение до openapi.yaml
-// wallet-report (reportExpenseByCategoryByMonth): categories[{account_uuid,
-// account_name, total_eq, op_count, months[{month_start, amount_eq,
-// op_count}]}], months[{month_start}] — все месяцы периода, total_eq,
-// incomplete, eq_currency_uuid.
+// add-category-month-analytics, wallet-report PR #6, reportExpenseByCategoryByMonth):
+// categories[{account_uuid, account_name, icon_sha256, amount_eq, op_count,
+// months[{month_start, amount_eq, op_count, incomplete}]}], months — строки
+// "ГГГГ-ММ-01" всех месяцев периода, total_eq, incomplete, eq_currency_uuid.
 inline nlohmann::json month_cell(const char* month_start, nlohmann::json amount_eq, int op_count) {
-    return {{"month_start", month_start}, {"amount_eq", std::move(amount_eq)}, {"op_count", op_count}};
+    return {{"month_start", month_start}, {"amount_eq", std::move(amount_eq)}, {"op_count", op_count},
+            {"incomplete", false}};
 }
 
 inline nlohmann::json matrix_row(const char* uuid, const char* name, nlohmann::json total_eq, int op_count,
                                  std::vector<nlohmann::json> months) {
     return {{"account_uuid", uuid},       {"account_name", name}, {"icon_sha256", "x"},
-            {"total_eq", std::move(total_eq)}, {"op_count", op_count}, {"months", std::move(months)}};
+            {"amount_eq", std::move(total_eq)}, {"op_count", op_count}, {"months", std::move(months)}};
 }
 
 inline nlohmann::json by_month_body(std::vector<nlohmann::json> categories, std::vector<std::string> period_months,
                                     const char* total_eq, bool incomplete = false) {
     nlohmann::json months = nlohmann::json::array();
-    for (const auto& m : period_months) months.push_back({{"month_start", m}});
+    for (const auto& m : period_months) months.push_back(m);
     return {{"months", months},           {"categories", std::move(categories)}, {"total_eq", total_eq},
             {"incomplete", incomplete},   {"eq_currency_uuid", "c-RUB"}};
 }
