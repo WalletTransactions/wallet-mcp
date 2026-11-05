@@ -93,3 +93,33 @@ TEST(dates_month_ranges) {
     CHECK_EQ(dates::month_name_ru(10), std::string("октябрь"));
     CHECK_EQ(dates::month_name_ru(13), std::string(""));
 }
+
+TEST(dates_month_fractions) {
+    auto d = [](const char* s) { return *dates::parse(s); };
+    // Два года со сдвигом: 25 месяцев, крайние складываются в один.
+    auto two_years = dates::month_fractions(d("2024-11-05"), d("2026-11-04"));
+    CHECK_EQ(two_years.size(), 25u);
+    CHECK_EQ(dates::months_touched(d("2024-11-05"), d("2026-11-04")), 25);
+    CHECK_EQ(two_years.front().days, 26);
+    CHECK_EQ(two_years.front().days_in_month, 30);
+    CHECK_EQ(two_years.back().days, 4);
+    CHECK_EQ(dates::months_hundredths(two_years), 2400L);
+    CHECK_EQ(dates::hundredths_to_string(dates::months_hundredths(two_years)), std::string("24.00"));
+    // Полмесяца.
+    auto half = dates::month_fractions(d("2026-09-01"), d("2026-09-15"));
+    CHECK_EQ(dates::hundredths_to_string(dates::months_hundredths(half)), std::string("0.50"));
+    // Февраль високосного года: 29 дней из 29; 14 из 29 — 0.48.
+    CHECK_EQ(dates::months_hundredths(dates::month_fractions(d("2028-02-01"), d("2028-02-29"))), 100L);
+    CHECK_EQ(dates::months_hundredths(dates::month_fractions(d("2028-02-01"), d("2028-02-14"))), 48L);
+    CHECK_EQ(dates::months_hundredths(dates::month_fractions(d("2026-02-01"), d("2026-02-14"))), 50L);
+    // Один день: 1/30.
+    auto one = dates::month_fractions(d("2026-09-10"), d("2026-09-10"));
+    CHECK_EQ(one.size(), 1u);
+    CHECK_EQ(dates::hundredths_to_string(dates::months_hundredths(one)), std::string("0.03"));
+    CHECK_EQ(dates::months_touched(d("2026-09-10"), d("2026-09-10")), 1);
+    // Через Новый год; четыре года — 48 месяцев.
+    CHECK_EQ(dates::months_touched(d("2026-12-31"), d("2027-01-01")), 2);
+    CHECK_EQ(dates::months_touched(d("2022-01-01"), d("2025-12-31")), 48);
+    CHECK_EQ(dates::hundredths_to_string(dates::months_hundredths(dates::month_fractions(d("2022-01-01"), d("2025-12-31")))),
+             std::string("48.00"));
+}

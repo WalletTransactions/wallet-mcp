@@ -1,4 +1,7 @@
 // Инструменты на фейковом wallet-report (fakes::FakeReports).
+#include <cstdio>
+
+#include "decimal.hpp"
 #include "fakes.hpp"
 #include "nlohmann/json.hpp"
 #include "test_framework.hpp"
@@ -51,6 +54,21 @@ json cat_row(const char* uuid, const char* name, json amount) {
 }
 
 const json kSeptember = {{"from", "2026-09-01"}, {"to", "2026-09-30"}};
+
+// Строки ответа только с прежними ключами: count/avg_per_month (change
+// add-category-analytics) проверяются отдельными тестами.
+json only(const json& rows, std::vector<std::string> keys) {
+    json out = json::array();
+    for (const auto& r : rows) {
+        json o = json::object();
+        for (const auto& k : keys) {
+            if (r.contains(k)) o[k] = r[k];
+        }
+        out.push_back(o);
+    }
+    return out;
+}
+const std::vector<std::string> kOldKeys = {"category", "amount", "amount_before", "delta"};
 
 json with(json base, const json& extra) {
     for (const auto& [k, v] : extra.items()) base[k] = v;
@@ -137,7 +155,7 @@ TEST(tools_spending_selected_categories) {
                             "34000.29"));
     json r = e.ok("spending_by_category", with(kSeptember, {{"categories", {"няня", "прод", "Кафе"}}}));
     CHECK_EQ(r["period"], (json{{"from", "2026-09-01"}, {"to", "2026-09-30"}}));
-    CHECK_EQ(r["rows"], (json{{{"category", "Няня"}, {"amount", "32000.00"}},
+    CHECK_EQ(only(r["rows"], kOldKeys), (json{{{"category", "Няня"}, {"amount", "32000.00"}},
                               {{"category", "Продукты"}, {"amount", "0.10"}},
                               {{"category", "Кафе"}, {"amount", "0.20"}}}));
     CHECK_EQ(r["total"], "32000.30");
@@ -164,7 +182,7 @@ TEST(tools_spending_category_without_expense_and_no_rate) {
     e.reports.set("/api/reports/expense-structure",
                   structure({cat_row("c-nanny", "Няня", "500"), cat_row("c-cafe", "Кафе", nullptr)}, "500", true));
     json r = e.ok("spending_by_category", with(kSeptember, {{"categories", {"Няня", "Продукты", "Кафе"}}}));
-    CHECK_EQ(r["rows"][1], (json{{"category", "Продукты"}, {"amount", "0.00"}}));
+    CHECK_EQ(only(r["rows"], kOldKeys)[1], (json{{"category", "Продукты"}, {"amount", "0.00"}}));
     CHECK(r["rows"][2]["amount"].is_null());
     CHECK_EQ(r["total"], "500.00");
     CHECK_EQ(r["incomplete"], true);
@@ -194,7 +212,7 @@ TEST(tools_spending_compare_two_calls) {
     CHECK(contains(second, "from=2026-08-01"));
     CHECK(!contains(second, "cmp_"));
     CHECK_EQ(r["compare_period"], (json{{"from", "2026-08-01"}, {"to", "2026-08-31"}}));
-    CHECK_EQ(r["rows"], (json{{{"category", "Продукты"}, {"amount", "12000.50"}, {"amount_before", "10000.25"},
+    CHECK_EQ(only(r["rows"], kOldKeys), (json{{{"category", "Продукты"}, {"amount", "12000.50"}, {"amount_before", "10000.25"},
                                {"delta", "2000.25"}}}));
     CHECK_EQ(r["total"], "12000.50");
     CHECK_EQ(r["total_before"], "10000.25");
@@ -205,7 +223,7 @@ TEST(tools_spending_compare_all_categories) {
     e.reports.push("/api/reports/expense-structure", structure({cat_row("c-food", "Продукты", "100")}, "100"));
     e.reports.push("/api/reports/expense-structure", structure({cat_row("c-cafe", "Кафе", "40")}, "40"));
     json r = e.ok("spending_by_category", with(kSeptember, {{"compare_from", "2026-08-01"}, {"compare_to", "2026-08-31"}}));
-    CHECK_EQ(r["rows"], (json{{{"category", "Продукты"}, {"amount", "100.00"}, {"amount_before", "0.00"}, {"delta", "100.00"}},
+    CHECK_EQ(only(r["rows"], kOldKeys), (json{{{"category", "Продукты"}, {"amount", "100.00"}, {"amount_before", "0.00"}, {"delta", "100.00"}},
                               {{"category", "Кафе"}, {"amount", "0.00"}, {"amount_before", "40.00"}, {"delta", "-40.00"}}}));
     CHECK_EQ(r["total_before"], "40.00");
 }
@@ -412,4 +430,299 @@ TEST(tools_name_with_parenthetical_note) {
     // Неоднозначность без скобок остаётся неоднозначностью.
     std::string err = e.error("spending_by_category", with(kSeptember, {{"categories", {"каф (кофе)"}}}));
     CHECK_EQ(err, "\"каф (кофе)\" подходит к нескольким: Кафе, Кафе на работе. Уточните.");
+}
+
+// ---------------------------------------------------------------------------
+// change add-category-analytics: exclude_categories, count/avg_per_month,
+// spending_by_category_by_month.
+
+namespace {
+
+// Справочник фикстуры плюс категории сценариев spec («Alcohol», «Bar», «Ремонт»).
+json accounts_plus(std::vector<std::pair<const char*, const char*>> extra) {
+    json acc = fakes::accounts_body();
+    for (const auto& [uuid, name] : extra) {
+        acc["accounts"].push_back({{"uuid", uuid}, {"name", name}, {"kind", "category"}, {"system_kind", 0},
+                                   {"is_archived", false}, {"icon_sha256", ""}, {"currency_uuid", ""},
+                                   {"iso_code", ""}, {"symbol", ""}, {"precision", ""}});
+    }
+    return acc;
+}
+
+json counted_row(const char* uuid, const char* name, json amount, int op_count) {
+    json r = cat_row(uuid, name, std::move(amount));
+    r["op_count"] = op_count;
+    return r;
+}
+
+std::string add_strings(const std::string& a, const std::string& b) {
+    return decimal::to_string(decimal::add(*decimal::parse(a), *decimal::parse(b)));
+}
+
+} // namespace
+
+TEST(tools_categories_and_exclude_together_is_error) {
+    Env e;
+    const std::string msg = "Задайте categories или exclude_categories, не оба.";
+    json both = with(kSeptember, {{"categories", {"Кафе"}}, {"exclude_categories", {"Няня"}}});
+    CHECK_EQ(e.error("spending_by_category", both), msg);
+    CHECK_EQ(e.error("spending_by_category_by_month", both), msg);
+    CHECK_EQ(e.error("search_operations", both), msg);
+    CHECK(e.reports.requests.empty()); // ни справочника, ни отчётов
+}
+
+TEST(tools_spending_exclude_categories) {
+    Env e;
+    e.reports.set("/api/reports/expense-structure",
+                  structure({counted_row("c-nanny", "Няня", "32000.00", 4), counted_row("c-food", "Продукты", "0.10", 2),
+                             counted_row("c-cafe", "Кафе", "0.20", 1), counted_row("c-ride", "Проезд", "1999.99", 9)},
+                            "34000.29"));
+    json r = e.ok("spending_by_category", with(kSeptember, {{"exclude_categories", {"Няня", "Проезд"}}}));
+    CHECK_EQ(only(r["rows"], kOldKeys),
+             (json{{{"category", "Продукты"}, {"amount", "0.10"}}, {{"category", "Кафе"}, {"amount", "0.20"}}}));
+    CHECK_EQ(r["total"], "0.30"); // точная сумма оставшихся, не total_eq
+    CHECK_EQ(r["count"], 3);
+    CHECK_EQ(r["incomplete"], false);
+    CHECK(!contains(e.reports.last("/api/reports/expense-structure"), "category"));
+}
+
+TEST(tools_search_exclude_categories) {
+    Env e;
+    e.reports.set("/api/reports/operations",
+                  {{"operations", json::array()}, {"incomplete", false}, {"has_more", false}, {"eq_currency_uuid", "c-RUB"},
+                   {"total_eq", "777.70"}, {"total_incomplete", false}, {"total_count", 12}});
+    json r = e.ok("search_operations", with(kSeptember, {{"kind", "any"}, {"exclude_categories", {"Няня", "Кафе"}}}));
+    std::string q = e.reports.last("/api/reports/operations");
+    CHECK(contains(q, "exclude_category_uuid=c-nanny%2Cc-cafe"));
+    CHECK(!contains(q, "&category_uuid="));
+    CHECK(!contains(q, "kind="));
+    // Исключение — фильтр: итог есть и при kind "any".
+    CHECK_EQ(r["total"], "777.70");
+    CHECK_EQ(r["count"], 12);
+}
+
+TEST(tools_spending_count_and_average) {
+    Env e;
+    // «Лето против девяти месяцев» из spec: 2026-06..08 против 2025-09..2026-05.
+    e.reports.push("/api/reports/expense-structure",
+                   structure({counted_row("c-nanny", "Няня", "5733.00", 6), counted_row("c-food", "Продукты", "100", 3)},
+                             "5833.00"));
+    e.reports.push("/api/reports/expense-structure",
+                   structure({counted_row("c-nanny", "Няня", "27850.00", 18)}, "27850.00"));
+    json r = e.ok("spending_by_category", {{"from", "2026-06-01"},
+                                           {"to", "2026-08-31"},
+                                           {"compare_from", "2025-09-01"},
+                                           {"compare_to", "2026-05-31"},
+                                           {"categories", {"Няня"}}});
+    CHECK_EQ(r["months"], "3.00");
+    CHECK_EQ(r["months_before"], "9.00");
+    CHECK_EQ(r["avg_per_month"], "1911.00");
+    CHECK_EQ(r["avg_per_month_before"], "3094.44");
+    CHECK_EQ(r["count"], 6);
+    CHECK_EQ(r["count_before"], 18);
+    CHECK_EQ(r["rows"], (json{{{"category", "Няня"}, {"amount", "5733.00"}, {"amount_before", "27850.00"},
+                               {"delta", "-22117.00"}, {"count", 6}, {"avg_per_month", "1911.00"},
+                               {"count_before", 18}, {"avg_per_month_before", "3094.44"}}}));
+    // Прежние ключи — в прежнем порядке, новые — после них.
+    std::string text = e.call("spending_by_category", {{"from", "2026-06-01"}, {"to", "2026-08-31"}}).text;
+    std::vector<std::string> keys;
+    const nlohmann::ordered_json parsed = nlohmann::ordered_json::parse(text);
+    for (const auto& item : parsed.items()) keys.push_back(item.key());
+    CHECK((keys == std::vector<std::string>{"period", "currency", "rows", "total", "incomplete", "count", "months",
+                                            "avg_per_month"}));
+}
+
+TEST(tools_spending_all_categories_average_from_sql_total) {
+    Env e;
+    e.reports.set("/api/reports/expense-structure",
+                  structure({counted_row("c-nanny", "Няня", "100", 2), counted_row("c-food", "Продукты", "50", 5)},
+                            "150.00"));
+    json r = e.ok("spending_by_category", {{"from", "2026-09-01"}, {"to", "2026-09-15"}});
+    CHECK_EQ(r["months"], "0.50");
+    CHECK_EQ(r["total"], "150.00");
+    CHECK_EQ(r["avg_per_month"], "300.00");
+    CHECK_EQ(r["count"], 7);
+    CHECK_EQ(r["rows"][1], (json{{"category", "Продукты"}, {"amount", "50.00"}, {"count", 5}, {"avg_per_month", "100.00"}}));
+}
+
+TEST(tools_spending_without_op_count_from_old_report) {
+    Env e;
+    // wallet-report до add-category-month-analytics: op_count нет.
+    e.reports.set("/api/reports/expense-structure",
+                  structure({cat_row("c-nanny", "Няня", "300.00"), cat_row("c-food", "Продукты", "30")}, "330.00"));
+    json r = e.ok("spending_by_category", with(kSeptember, {{"categories", {"Няня", "Кафе"}}}));
+    CHECK(r["rows"][0]["count"].is_null());
+    CHECK(r["rows"][1]["count"].is_null());
+    CHECK(r["count"].is_null());
+    CHECK_EQ(r["rows"][0]["avg_per_month"], "300.00");
+    CHECK_EQ(r["total"], "300.00");
+    CHECK_EQ(r["months"], "1.00");
+}
+
+TEST(tools_spending_category_without_expense) {
+    Env e;
+    e.reports.set("/api/reports/expense-structure", structure({counted_row("c-nanny", "Няня", "300.00", 2)}, "300.00"));
+    json r = e.ok("spending_by_category", with(kSeptember, {{"categories", {"Кафе"}}}));
+    CHECK_EQ(r["rows"][0], (json{{"category", "Кафе"}, {"amount", "0.00"}, {"count", 0}, {"avg_per_month", "0.00"}}));
+    CHECK_EQ(r["count"], 0);
+}
+
+TEST(tools_by_month_period_limit) {
+    Env e;
+    std::string err = e.error("spending_by_category_by_month", {{"from", "2022-01-01"}, {"to", "2025-12-31"}});
+    CHECK_EQ(err, "Период — не длиннее 36 месяцев. Разбейте его на части.");
+    // Ровно 36 задетых месяцев — можно (со сдвигом внутри месяцев).
+    e.reports.set("/api/reports/expense-by-category-by-month", fakes::by_month_body({}, {}, "0"));
+    e.ok("spending_by_category_by_month", {{"from", "2023-11-15"}, {"to", "2026-10-10"}});
+    err = e.error("spending_by_category_by_month", {{"from", "2023-11-15"}, {"to", "2026-11-01"}});
+    CHECK_EQ(err, "Период — не длиннее 36 месяцев. Разбейте его на части.");
+    CHECK_EQ(e.reports.count("/api/reports/expense-by-category-by-month"), 1);
+}
+
+TEST(tools_by_month_no_selected_months) {
+    Env e;
+    std::string err = e.error("spending_by_category_by_month",
+                              {{"from", "2026-09-01"}, {"to", "2026-10-31"}, {"months_of_year", {6, 7, 8}}});
+    CHECK_EQ(err, "В периоде нет выбранных месяцев.");
+    CHECK(e.reports.requests.empty());
+    // Ошибки схемы — до вызова, исключением InvalidParams (-32602).
+    CHECK_THROWS(e.call("spending_by_category_by_month", with(kSeptember, {{"months_of_year", {13}}})));
+    CHECK_THROWS(e.call("spending_by_category_by_month", with(kSeptember, {{"months_of_year", {9, 9}}})));
+    CHECK(e.reports.requests.empty());
+}
+
+TEST(tools_by_month_alcohol_two_years) {
+    Env e;
+    e.reports.set("/api/reports/accounts", accounts_plus({{"c-alc", "Alcohol"}}));
+    e.reports.set("/api/reports/expense-by-category-by-month",
+                  fakes::by_month_body({fakes::matrix_row("c-alc", "Alcohol", "1304.09", 37,
+                                                          {fakes::month_cell("2024-11-01", "100.00", 3),
+                                                           fakes::month_cell("2025-07-01", "1000.09", 30),
+                                                           fakes::month_cell("2026-11-01", "204.00", 4)}),
+                                        fakes::matrix_row("c-food", "Продукты", "5000", 50,
+                                                          {fakes::month_cell("2025-01-01", "5000", 50)})},
+                                       {"2024-11-01", "2026-11-01"}, "6304.09"));
+    json r = e.ok("spending_by_category_by_month",
+                  {{"from", "2024-11-05"}, {"to", "2026-11-04"}, {"categories", {"Alcohol"}}});
+    std::string q = e.reports.last("/api/reports/expense-by-category-by-month");
+    CHECK(contains(q, "from=2024-11-05%2000%3A00%3A00"));
+    CHECK(contains(q, "to=2026-11-04%2023%3A59%3A59.999999"));
+    CHECK(contains(q, "eq_currency=RUB"));
+    CHECK(!contains(q, "category_uuid")); // фильтры категорий — на стороне wallet-mcp (D1)
+    CHECK_EQ(r["rows"], (json{{{"category", "Alcohol"},
+                               {"amount", "1304.09"},
+                               {"count", 37},
+                               {"avg_per_month", "54.34"},
+                               {"by_month", {{"2024-11", "100.00"}, {"2025-07", "1000.09"}, {"2026-11", "204.00"}}}}}));
+    CHECK_EQ(r["months"], "24.00");
+    CHECK_EQ(r["total"], "1304.09");
+    CHECK_EQ(r["count"], 37);
+    CHECK_EQ(r["avg_per_month"], "54.34");
+    CHECK_EQ(r["period"], (json{{"from", "2024-11-05"}, {"to", "2026-11-04"}}));
+    CHECK_EQ(r["currency"], "RUB");
+    CHECK_EQ(r["incomplete"], false);
+    CHECK(!r.contains("months_of_year"));
+}
+
+TEST(tools_by_month_by_month_only_with_categories) {
+    Env e;
+    e.reports.set("/api/reports/accounts", accounts_plus({{"c-bar", "Bar"}}));
+    e.reports.set("/api/reports/expense-by-category-by-month",
+                  fakes::by_month_body({fakes::matrix_row("c-bar", "Bar", "90", 3,
+                                                          {fakes::month_cell("2026-06-01", "40", 2),
+                                                           fakes::month_cell("2026-08-01", "50", 1)}),
+                                        fakes::matrix_row("c-food", "Продукты", "300", 6,
+                                                          {fakes::month_cell("2026-06-01", "100", 2),
+                                                           fakes::month_cell("2026-07-01", "100", 2),
+                                                           fakes::month_cell("2026-08-01", "100", 2)})},
+                                       {"2026-06-01", "2026-07-01", "2026-08-01"}, "390.00"));
+    const json summer = {{"from", "2026-06-01"}, {"to", "2026-08-31"}};
+    // Без фильтров — все категории без by_month, total — из total_eq.
+    json all = e.ok("spending_by_category_by_month", summer);
+    CHECK_EQ(all["rows"].size(), 2u);
+    for (const auto& row : all["rows"]) CHECK(!row.contains("by_month"));
+    CHECK_EQ(all["total"], "390.00");
+    CHECK_EQ(all["count"], 9);
+    CHECK_EQ(all["months"], "3.00");
+    CHECK_EQ(all["avg_per_month"], "130.00");
+    // С categories — by_month только с непустыми месяцами.
+    json bar = e.ok("spending_by_category_by_month", with(summer, {{"categories", {"Bar"}}}));
+    CHECK_EQ(bar["rows"][0]["by_month"], (json{{"2026-06", "40.00"}, {"2026-08", "50.00"}}));
+    // Выбранная категория без трат — нули и пустой by_month.
+    json cafe = e.ok("spending_by_category_by_month", with(summer, {{"categories", {"Кафе"}}}));
+    CHECK_EQ(cafe["rows"][0], (json{{"category", "Кафе"}, {"amount", "0.00"}, {"count", 0},
+                                    {"avg_per_month", "0.00"}, {"by_month", json::object()}}));
+}
+
+TEST(tools_by_month_summer_plus_rest_equals_whole) {
+    Env e;
+    // 2024-09-01..2026-08-31: «Продукты» каждый месяц по 10.01, «Няня» — только летом 2025 и 2026.
+    std::vector<json> food_cells, nanny_cells;
+    std::vector<std::string> all_months;
+    for (int i = 0; i < 24; ++i) {
+        int y = 2024 + (8 + i) / 12;
+        int m = (8 + i) % 12 + 1;
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "%04d-%02d-01", y, m);
+        all_months.push_back(buf);
+    }
+    for (const auto& m : all_months) {
+        food_cells.push_back(fakes::month_cell(m.c_str(), "10.01", 1));
+        int month = std::stoi(m.substr(5, 2));
+        if (month >= 6 && month <= 8) nanny_cells.push_back(fakes::month_cell(m.c_str(), "1000.50", 2));
+    }
+    e.reports.set("/api/reports/expense-by-category-by-month",
+                  fakes::by_month_body({fakes::matrix_row("c-nanny", "Няня", "6003.00", 12, nanny_cells),
+                                        fakes::matrix_row("c-food", "Продукты", "240.24", 24, food_cells)},
+                                       all_months, "6243.24"));
+    const json period = {{"from", "2024-09-01"}, {"to", "2026-08-31"}};
+    json whole = e.ok("spending_by_category_by_month", period);
+    json summer = e.ok("spending_by_category_by_month", with(period, {{"months_of_year", {8, 6, 7}}}));
+    json rest = e.ok("spending_by_category_by_month", with(period, {{"months_of_year", {1, 2, 3, 4, 5, 9, 10, 11, 12}}}));
+    CHECK_EQ(whole["months"], "24.00");
+    CHECK_EQ(summer["months"], "6.00");
+    CHECK_EQ(rest["months"], "18.00");
+    CHECK_EQ(summer["months_of_year"], (json{6, 7, 8})); // эхо по возрастанию
+    CHECK_EQ(summer["total"], "6063.06");
+    CHECK_EQ(summer["avg_per_month"], "1010.51");
+    CHECK_EQ(summer["count"], 18);
+    CHECK_EQ(rest["total"], "180.18");
+    CHECK_EQ(rest["avg_per_month"], "10.01");
+    // «Няня» летом не тратилась в остальные месяцы — строки нет.
+    CHECK_EQ(rest["rows"].size(), 1u);
+    CHECK_EQ(rest["rows"][0]["category"], "Продукты");
+    CHECK_EQ(add_strings(summer["total"], rest["total"]), whole["total"].get<std::string>());
+    CHECK_EQ(summer["count"].get<int>() + rest["count"].get<int>(), whole["count"].get<int>());
+    CHECK_EQ(e.reports.count("/api/reports/expense-by-category-by-month"), 3);
+}
+
+TEST(tools_by_month_exclude) {
+    Env e;
+    e.reports.set("/api/reports/expense-by-category-by-month",
+                  fakes::by_month_body({fakes::matrix_row("c-nanny", "Няня", "32000.00", 4,
+                                                          {fakes::month_cell("2026-09-01", "32000.00", 4)}),
+                                        fakes::matrix_row("c-food", "Продукты", "0.10", 1,
+                                                          {fakes::month_cell("2026-09-01", "0.10", 1)}),
+                                        fakes::matrix_row("c-cafe", "Кафе", "0.20", 2,
+                                                          {fakes::month_cell("2026-09-01", "0.20", 2)}),
+                                        fakes::matrix_row("c-ride", "Проезд", nullptr, 1,
+                                                          {fakes::month_cell("2026-09-01", nullptr, 1)})},
+                                       {"2026-09-01"}, "32000.30", true));
+    json r = e.ok("spending_by_category_by_month", with(kSeptember, {{"exclude_categories", {"Няня"}}}));
+    CHECK_EQ(r["rows"].size(), 3u);
+    for (const auto& row : r["rows"]) CHECK(!row.contains("by_month"));
+    CHECK_EQ(r["total"], "0.30");
+    CHECK_EQ(r["count"], 4);
+    CHECK(r["rows"][2]["amount"].is_null()); // курса не нашлось
+    CHECK(r["rows"][2]["avg_per_month"].is_null());
+    CHECK_EQ(r["incomplete"], true);
+}
+
+TEST(tools_by_month_report_without_endpoint_is_unavailable) {
+    Env e;
+    // wallet-report без add-category-month-analytics: 404.
+    e.reports.set("/api/reports/expense-by-category-by-month", {{"error", "not found"}}, 404);
+    tools::Outcome o = e.call("spending_by_category_by_month", kSeptember);
+    CHECK(o.kind == tools::Outcome::Kind::Unavailable);
+    CHECK_EQ(o.text, tools::kReportsUnavailable);
 }

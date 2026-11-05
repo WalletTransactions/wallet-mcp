@@ -115,17 +115,19 @@ TEST(mcp_instructions_text) {
     CHECK(text.find("«этот месяц» (октябрь) — from 2026-10-01, to 2026-10-31") != std::string::npos);
     CHECK(text.find("«прошлый месяц» (сентябрь) — from 2026-09-01, to 2026-09-30") != std::string::npos);
     CHECK(text.find("без своих пояснений в скобках") != std::string::npos);
+    CHECK(text.find("Среднее в месяц бери из avg_per_month, сравнение месяцев года (лето, зима) — через "
+                    "months_of_year в spending_by_category_by_month; сам не дели и не складывай.") != std::string::npos);
 
     std::string nov = mcp::instructions(*dates::parse("2026-11-04"), "UTC");
     CHECK(nov.find("«прошлый месяц» (октябрь) — from 2026-10-01, to 2026-10-31") != std::string::npos);
     CHECK(nov.find("2026-09-01") == std::string::npos);
 }
 
-TEST(mcp_tools_list_has_exactly_six_read_tools) {
+TEST(mcp_tools_list_has_exactly_seven_read_tools) {
     json j = call(R"({"jsonrpc":"2.0","id":1,"method":"tools/list"})");
     const json& list = j["result"]["tools"];
     REQUIRE(list.is_array());
-    CHECK_EQ(list.size(), 6u);
+    CHECK_EQ(list.size(), 7u);
     std::vector<std::string> names;
     for (const auto& t : list) {
         names.push_back(t["name"]);
@@ -137,7 +139,8 @@ TEST(mcp_tools_list_has_exactly_six_read_tools) {
         }
     }
     CHECK((names == std::vector<std::string>{"list_wallets", "list_categories", "spending_by_category",
-                                             "income_expense_by_month", "balance", "search_operations"}));
+                                             "spending_by_category_by_month", "income_expense_by_month", "balance",
+                                             "search_operations"}));
 }
 
 TEST(mcp_tools_call_unknown_tool) {
@@ -197,6 +200,37 @@ TEST(mcp_schema_validation) {
     std::string cyr;
     for (int i = 0; i < 100; ++i) cyr += "я";
     CHECK(!invalid("search_operations", {{"from", "a"}, {"to", "b"}, {"text", cyr}}));
+    // months_of_year: целые 1..12 без повторов.
+    const json p = {{"from", "a"}, {"to", "b"}};
+    auto moy = [&](json v) {
+        json a = p;
+        a["months_of_year"] = std::move(v);
+        return a;
+    };
+    CHECK(!invalid("spending_by_category_by_month", moy({6, 7, 8})));
+    CHECK(!invalid("spending_by_category_by_month", moy({12, 1, 2})));
+    CHECK(!invalid("spending_by_category_by_month", moy({6.0})));
+    CHECK(invalid("spending_by_category_by_month", moy({13})));
+    CHECK(invalid("spending_by_category_by_month", moy({0})));
+    CHECK(invalid("spending_by_category_by_month", moy({6, 6})));
+    CHECK(invalid("spending_by_category_by_month", moy({"6"})));
+    CHECK(invalid("spending_by_category_by_month", moy({6.5})));
+    CHECK(invalid("spending_by_category_by_month", moy(json::array())));
+    CHECK(invalid("spending_by_category_by_month", moy(6)));
+    CHECK(invalid("spending_by_category_by_month", {{"from", "a"}, {"to", "b"}, {"compare_from", "a"}}));
+    CHECK(!invalid("spending_by_category", {{"from", "a"}, {"to", "b"}, {"exclude_categories", {"Ремонт"}}}));
+    CHECK(!invalid("search_operations", {{"from", "a"}, {"to", "b"}, {"exclude_categories", {"Ремонт"}}}));
+    CHECK(invalid("spending_by_category", {{"from", "a"}, {"to", "b"}, {"exclude_categories", json::array()}}));
     CHECK(invalid("list_wallets", json::array()));
     CHECK(invalid("balance", {{"wallet", "x"}, {"token", "wmcp_x"}}));
+}
+
+TEST(mcp_months_of_year_out_of_range_is_invalid_params) {
+    for (const char* moy : {"[13]", "[6,6]"}) {
+        std::string body = std::string(R"({"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":)"
+                                       R"("spending_by_category_by_month","arguments":{"from":"2026-01-01",)"
+                                       R"("to":"2026-12-31","months_of_year":)") +
+                           moy + "}}}";
+        CHECK_EQ(error_code(call(body)), -32602);
+    }
 }
