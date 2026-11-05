@@ -1,6 +1,7 @@
 #include "decimal.hpp"
 
 #include <algorithm>
+#include <limits>
 
 namespace decimal {
 
@@ -98,6 +99,23 @@ std::string format(const Decimal& d, int precision) {
 std::string format_string(const std::string& s, int precision) {
     auto d = parse(s);
     return d ? format(*d, precision) : s;
+}
+
+std::optional<std::string> div(const Decimal& a, const Decimal& b, int precision) {
+    if (b.units == 0) return std::nullopt;
+    precision = std::clamp(precision, 0, kScale);
+    // a и b на одном масштабе 10^8: a/b × 10^p = a.units × 10^p / b.units.
+    __int128 num = a.units < 0 ? -a.units : a.units;
+    __int128 den = b.units < 0 ? -b.units : b.units;
+    const __int128 p = pow10(precision);
+    const __int128 max = std::numeric_limits<__int128>::max();
+    if (num > max / p) return std::nullopt;
+    num *= p;
+    __int128 q = num / den;
+    __int128 r = num % den;
+    if (r >= den - r) ++q; // 2r >= den без переполнения
+    bool negative = (a.units < 0) != (b.units < 0);
+    return render(negative ? -q : q, precision);
 }
 
 } // namespace decimal

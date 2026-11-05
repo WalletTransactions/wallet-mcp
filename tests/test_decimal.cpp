@@ -56,3 +56,24 @@ TEST(decimal_format_rounds_half_away_from_zero) {
     CHECK_EQ(decimal::format(d("12.5"), 0), "13");
     CHECK_EQ(decimal::format_string("0", 2), "0.00");
 }
+
+TEST(decimal_div_rounds_half_away_from_zero) {
+    CHECK_EQ(decimal::div(d("1304.09"), d("24.00"), 2).value_or("null"), "54.34");
+    CHECK_EQ(decimal::div(d("27850.00"), d("9.00"), 2).value_or("null"), "3094.44");
+    CHECK_EQ(decimal::div(d("5733.00"), d("3.00"), 2).value_or("null"), "1911.00");
+    CHECK_EQ(decimal::div(d("300.00"), d("0.50"), 2).value_or("null"), "600.00");
+    CHECK_EQ(decimal::div(d("-1"), d("3"), 2).value_or("null"), "-0.33");
+    CHECK_EQ(decimal::div(d("1"), d("8"), 2).value_or("null"), "0.13");   // 0.125 — вверх
+    CHECK_EQ(decimal::div(d("-1"), d("8"), 2).value_or("null"), "-0.13"); // от нуля
+    CHECK_EQ(decimal::div(d("-0.001"), d("1"), 2).value_or("null"), "0.00"); // без «-0.00»
+    CHECK_EQ(decimal::div(d("100"), d("3"), 0).value_or("null"), "33");
+    CHECK_EQ(decimal::div(d("0"), d("24.00"), 2).value_or("null"), "0.00");
+}
+
+TEST(decimal_div_by_zero_and_overflow) {
+    CHECK(!decimal::div(d("1304.09"), d("0.00"), 2).has_value());
+    CHECK(!decimal::div(d("0"), d("0"), 2).has_value());
+    // 28 цифр целой части × 10^8 — не влезает в __int128 после умножения.
+    CHECK(!decimal::div(d("9999999999999999999999999999"), d("1"), 8).has_value());
+    CHECK_EQ(decimal::div(d("999999999999.99"), d("0.01"), 2).value_or("null"), "99999999999999.00");
+}

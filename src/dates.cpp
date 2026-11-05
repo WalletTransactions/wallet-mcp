@@ -96,6 +96,46 @@ Range previous_month(const Date& today) {
     return {{y, m, 1}, {y, m, days_in_month(y, m)}};
 }
 
+std::vector<MonthShare> month_fractions(const Date& from, const Date& to) {
+    std::vector<MonthShare> out;
+    if (to < from) return out;
+    int y = from.year;
+    int m = from.month;
+    while (y < to.year || (y == to.year && m <= to.month)) {
+        int dim = days_in_month(y, m);
+        int first = y == from.year && m == from.month ? from.day : 1;
+        int last = y == to.year && m == to.month ? to.day : dim;
+        out.push_back({y, m, last - first + 1, dim});
+        if (++m > 12) {
+            m = 1;
+            ++y;
+        }
+    }
+    return out;
+}
+
+int months_touched(const Date& from, const Date& to) {
+    if (to < from) return 0;
+    return (to.year - from.year) * 12 + (to.month - from.month) + 1;
+}
+
+long months_hundredths(const std::vector<MonthShare>& shares) {
+    // НОК(28, 29, 30, 31) = 377580: каждая доля — целое число таких частей.
+    constexpr long kDen = 377580;
+    long num = 0;
+    for (const auto& s : shares) num += static_cast<long>(s.days) * (kDen / s.days_in_month);
+    long scaled = num * 100;
+    long q = scaled / kDen;
+    if ((scaled % kDen) * 2 >= kDen) ++q;
+    return q;
+}
+
+std::string hundredths_to_string(long hundredths) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%ld.%02ld", hundredths / 100, hundredths % 100);
+    return buf;
+}
+
 std::string period_from(const Date& d) { return to_string(d) + " 00:00:00"; }
 
 std::string period_to(const Date& d) { return to_string(d) + " 23:59:59.999999"; }

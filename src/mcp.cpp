@@ -110,6 +110,8 @@ std::string instructions(const dates::Date& today, const std::string& tz_name) {
     return "Сегодня " + dates::to_string(today) + ", " + dates::weekday_ru(today) + " (пояс " + tz_name +
            "). Инструменты wallet-mcp читают кошельки, категории и операции пользователя, ничего не меняют.\n"
            "Не считай суммы сам — используй результаты инструментов.\n"
+           "Среднее в месяц бери из avg_per_month, сравнение месяцев года (лето, зима) — через months_of_year в "
+           "spending_by_category_by_month; сам не дели и не складывай.\n"
            "Периоды передавай явными датами ГГГГ-ММ-ДД, обе границы включаются. Готовые периоды: «этот месяц» (" +
            dates::month_name_ru(cur.from.month) + ") — " + range(cur) + "; «прошлый месяц» (" +
            dates::month_name_ru(prev.from.month) + ") — " + range(prev) +

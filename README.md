@@ -94,10 +94,11 @@ HTTP `200`: `-32700` (не JSON), `-32600` (не JSON-RPC 2.0, батч), `-3260
 | --- | --- | --- | --- |
 | `list_wallets` | `currency?` | `wallets[{name, currency, balance}]`, `total`, `incomplete`, `date` | `accounts`, `balance?date=<завтра>` |
 | `list_categories` | — | `categories[]` без системных и архивных | `accounts` |
-| `spending_by_category` | `from`, `to`, `categories?`, `compare_from?`, `compare_to?`, `currency?` | `rows[{category, amount, amount_before?, delta?}]`, `total`, `total_before?`, `incomplete` | `expense-structure` ×1 или ×2 |
+| `spending_by_category` | `from`, `to`, `categories?`, `exclude_categories?`, `compare_from?`, `compare_to?`, `currency?` | `rows[{category, amount, amount_before?, delta?, count, avg_per_month, count_before?, avg_per_month_before?}]`, `total`, `total_before?`, `incomplete`, `count`, `months`, `avg_per_month`, `count_before?`, `months_before?`, `avg_per_month_before?` | `expense-structure` ×1 или ×2 |
+| `spending_by_category_by_month` | `from`, `to`, `categories?`, `exclude_categories?`, `months_of_year?`, `currency?` | `rows[{category, amount, count, avg_per_month, by_month?}]`, `months_of_year?`, `total`, `count`, `months`, `avg_per_month`, `incomplete` | `expense-by-category-by-month` ×1 |
 | `income_expense_by_month` | `from`, `to`, `currency?` | `months[{month, income, expense}]`, `incomplete` | `income-expense-by-month` |
 | `balance` | `wallet?`, `date?`, `currency?` | как `list_wallets` на конец дня `date` | `balance?date=<date+1>` |
-| `search_operations` | `from`, `to`, `text?`, `categories?`, `wallets?`, `kind?`, `limit?`, `currency?` | `operations[{date, kind, amount, currency, category, wallet \| from, to, comment}]`, `has_more`, `total`, `count`, `incomplete`, `kind` | `operations` с `category_uuid`/`wallet_uuid`/`kind`/`q`/`limit` |
+| `search_operations` | `from`, `to`, `text?`, `categories?`, `exclude_categories?`, `wallets?`, `kind?`, `limit?`, `currency?` | `operations[{date, kind, amount, currency, category, wallet \| from, to, comment}]`, `has_more`, `total`, `count`, `incomplete`, `kind` | `operations` с `category_uuid`/`exclude_category_uuid`/`wallet_uuid`/`kind`/`q`/`limit` |
 
 Детали:
 
@@ -106,12 +107,31 @@ HTTP `200`: `-32700` (не JSON), `-32600` (не JSON-RPC 2.0, батч), `-3260
   без курса в него не входит и ставит `incomplete: true`. Без `categories`
   `total` берётся из `total_eq` wallet-report. Сравнение периодов делается
   вторым вызовом `expense-structure`: ответ с `cmp_*` даёт доли, но не суммы.
+  `exclude_categories` — все категории, кроме перечисленных, `total` — точная
+  сумма оставшихся строк. `count` — `op_count` wallet-report (у wallet-report
+  без него — `null`). `months` — делитель среднего: сумма долей месяцев
+  периода по дням («2024-11-05..2026-11-04» — `24.00`), `avg_per_month` —
+  сумма / `months`, точной десятичной арифметикой. С периодом сравнения — то
+  же с суффиксом `_before`: периоды разной длины сравниваются по среднему.
+- **`spending_by_category_by_month`.** Матрица «категория × месяц» из
+  `expense-by-category-by-month`; период — не длиннее 36 задетых месяцев.
+  `months_of_year` (1..12 без повторов) оставляет только эти месяцы года:
+  суммы, `count`, `by_month` и `months` считаются по ним, так что «лето» и
+  «остальные месяцы» с одним периодом в сумме дают итог без фильтра.
+  `by_month` («ГГГГ-ММ» → сумма, только непустые месяцы) — только при
+  `categories`: без фильтра ответ на 90 категорий × 36 месяцев не влез бы в
+  контекст маленькой модели. Без `categories`, `exclude_categories` и
+  `months_of_year` `total` — `total_eq` wallet-report, иначе точная сумма
+  строк.
+- **`categories` и `exclude_categories`** вместе — `isError` «Задайте
+  categories или exclude_categories, не оба.».
 - **`balance`, `list_wallets`.** Баланс на конец дня запрашивается как
   `/balance?date=<следующий день>`, потому что граница там не включается.
   «Сегодня» считается в поясе `MCP_TZ`. Итог всех кошельков — `total_eq`
   wallet-report. В нём есть и архивные кошельки, как в вебе.
 - **`search_operations`.** `kind` по умолчанию `expense`, `total` при этом
-  неотрицательный. `kind: "any"` снимает фильтр типа, и тогда `total` —
+  неотрицательный. `exclude_categories` уходит в `exclude_category_uuid` и
+  считается фильтром — итог есть и при `any`. `kind: "any"` снимает фильтр типа, и тогда `total` —
   сальдо: доходы минус расходы, прямые переводы не входят. `total` и
   `count` — по всем подходящим операциям периода (SQL), а не только по
   показанным. При `any` без других фильтров итога нет. `limit` — 1..50, по
@@ -119,10 +139,12 @@ HTTP `200`: `-32700` (не JSON), `-32600` (не JSON-RPC 2.0, батч), `-3260
   итога в ответе нет (wallet-report без фильтров ленты), инструмент
   отвечает «Отчёты временно недоступны».
 - **Ошибки.** Аргумент не по `inputSchema` (лишний ключ, неверный тип, вне
-  enum или диапазона) — JSON-RPC `-32602`. `null` у необязательного
+  enum или диапазона, повтор в `months_of_year`) — JSON-RPC `-32602`. `null` у необязательного
   аргумента считается отсутствием. Ошибка смысла — `isError: true` с
   текстом: дата не существует, `from` позже `to`, задана одна граница
-  сравнения, имя не найдено или неоднозначно, неизвестная валюта, «Кошельков
+  сравнения, имя не найдено или неоднозначно, неизвестная валюта, заданы
+  оба списка категорий, помесячный период длиннее 36 месяцев, «В периоде нет
+  выбранных месяцев.», «Кошельков
   пока нет — заведите их в приложении.». wallet-report не ответил или
   ответил не `200`/`401` — «Отчёты временно недоступны, попробуйте позже.».
 

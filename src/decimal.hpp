@@ -38,4 +38,9 @@ std::string format(const Decimal& d, int precision);
 // parse + format; непарсящаяся строка возвращается как есть.
 std::string format_string(const std::string& s, int precision);
 
+// a / b с округлением до precision знаков (половина — от нуля), вывод ровно
+// с precision знаками: среднее в месяц (change add-category-analytics, D4).
+// nullopt — b = 0 или переполнение __int128 (проверяется до умножения).
+std::optional<std::string> div(const Decimal& a, const Decimal& b, int precision);
+
 } // namespace decimal

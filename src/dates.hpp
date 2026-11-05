@@ -10,6 +10,7 @@
 #include <ctime>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace dates {
 
@@ -51,6 +52,25 @@ Range previous_month(const Date& today); // весь прошлый месяц
 // "ГГГГ-ММ-ДД 00:00:00" и "ГГГГ-ММ-ДД 23:59:59.999999".
 std::string period_from(const Date& d);
 std::string period_to(const Date& d);
+
+// Календарные месяцы, которые задевает период from..to (обе границы
+// включаются), и доля каждого — дни месяца внутри периода / дни в месяце
+// (change add-category-analytics, D3). Доля хранится точно (days /
+// days_in_month), округляется только сумма — months_hundredths.
+struct MonthShare {
+    int year = 0;
+    int month = 0;
+    int days = 0;          // дней месяца внутри периода
+    int days_in_month = 0; // дней в месяце
+};
+std::vector<MonthShare> month_fractions(const Date& from, const Date& to);
+int months_touched(const Date& from, const Date& to);
+
+// Сумма долей в сотых, точно (общий знаменатель 28..31) и с округлением
+// половины вверх: 2024-11-05..2026-11-04 → 2400 (26/30 + 22 + 4/30).
+long months_hundredths(const std::vector<MonthShare>& shares);
+// 2400 → "24.00".
+std::string hundredths_to_string(long hundredths);
 
 // /balance не включает свою границу, а инструмент обещает баланс на конец
 // дня, поэтому в запрос уходит следующий день.
