@@ -98,7 +98,7 @@ HTTP `200`: `-32700` (не JSON), `-32600` (не JSON-RPC 2.0, батч), `-3260
 | `spending_by_category_by_month` | `from`, `to`, `categories?`, `exclude_categories?`, `months_of_year?`, `currency?` | `rows[{category, amount, count, avg_per_month, by_month?}]`, `months_of_year?`, `total`, `count`, `months`, `avg_per_month`, `incomplete` | `expense-by-category-by-month` ×1 |
 | `income_expense_by_month` | `from`, `to`, `currency?` | `months[{month, income, expense}]`, `incomplete` | `income-expense-by-month` |
 | `balance` | `wallet?`, `date?`, `currency?` | как `list_wallets` на конец дня `date` | `balance?date=<date+1>` |
-| `search_operations` | `from`, `to`, `text?` (массив вариантов), `categories?`, `exclude_categories?`, `wallets?`, `kind?`, `limit?`, `cursor?`, `currency?` | `operations[{date, kind, amount, currency, category, wallet \| from, to, comment}]`, `has_more`, `next_cursor?`, `total`, `count`, `incomplete`, `kind` | `operations` с `category_uuid`/`exclude_category_uuid`/`wallet_uuid`/`kind`/`q` (повторённый)/`limit`/`cursor_date`+`cursor_uuid` |
+| `search_operations` | `from?`, `to?`, `text?` (массив вариантов), `categories?`, `exclude_categories?`, `wallets?`, `kind?`, `limit?`, `cursor?`, `currency?` | `operations[{date, kind, amount, currency, category, wallet \| from, to, comment}]`, `has_more`, `next_cursor?`, `total`, `count`, `incomplete`, `kind` | `operations` с `category_uuid`/`exclude_category_uuid`/`wallet_uuid`/`kind`/`q` (повторённый)/`limit`/`cursor_date`+`cursor_uuid` |
 
 Детали:
 
@@ -150,6 +150,12 @@ HTTP `200`: `-32700` (не JSON), `-32600` (не JSON-RPC 2.0, батч), `-3260
   неверен: передайте next_cursor из прошлого ответа без изменений.» до
   обращения к wallet-report; `has_more` без курсора в ответе wallet-report —
   «Отчёты временно недоступны».
+  Период необязателен: без `to` — по сегодня в поясе `MCP_TZ`, без `from` — с
+  начала истории (в wallet-report уходит `1900-01-01`, в ответе
+  `period.from: null`). Так вопросы «когда последний раз…» решаются одним
+  вызовом без даты от модели: LM Studio не передаёт модели `instructions`
+  со строкой «Сегодня …», и маленькая модель подставляла выдуманную дату.
+  `from` позже сегодня без `to` — «Период неверен: from (…) позже to (…).».
 - **Ошибки.** Аргумент не по `inputSchema` (лишний ключ, неверный тип, вне
   enum или диапазона, повтор в `months_of_year`) — JSON-RPC `-32602`. `null` у необязательного
   аргумента считается отсутствием. Ошибка смысла — `isError: true` с

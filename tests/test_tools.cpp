@@ -552,6 +552,47 @@ TEST(tools_search_cursor_pages) {
     CHECK_EQ(second["count"], 30);
 }
 
+// Период search_operations по умолчанию (search-default-period): без to — по
+// сегодня (Env: 2026-10-31), без from — с начала истории; в эхе from: null.
+TEST(tools_search_default_period) {
+    Env e;
+    const json empty = {{"operations", json::array()}, {"incomplete", false}, {"has_more", false},
+                        {"eq_currency_uuid", "c-RUB"}, {"total_eq", "23"}, {"total_incomplete", false},
+                        {"total_count", 1}};
+    e.reports.set("/api/reports/operations", empty);
+
+    json r = e.ok("search_operations", {{"text", json::array({"стриж"})}});
+    std::string q = e.reports.last("/api/reports/operations");
+    CHECK(contains(q, "from=1900-01-01%2000%3A00%3A00"));
+    CHECK(contains(q, "to=2026-10-31%2023%3A59%3A59"));
+    CHECK(r["period"]["from"].is_null());
+    CHECK_EQ(r["period"]["to"], "2026-10-31");
+    CHECK_EQ(r["total"], "23.00");
+
+    // Только from — по сегодня; в эхе обе даты.
+    r = e.ok("search_operations", {{"from", "2026-10-01"}});
+    CHECK(contains(e.reports.last("/api/reports/operations"), "to=2026-10-31%2023%3A59%3A59"));
+    CHECK_EQ(r["period"], (json{{"from", "2026-10-01"}, {"to", "2026-10-31"}}));
+
+    // Только to — с начала истории по to.
+    r = e.ok("search_operations", {{"to", "2026-03-31"}});
+    q = e.reports.last("/api/reports/operations");
+    CHECK(contains(q, "from=1900-01-01%2000%3A00%3A00"));
+    CHECK(contains(q, "to=2026-03-31%2023%3A59%3A59"));
+    CHECK(r["period"]["from"].is_null());
+    CHECK_EQ(r["period"]["to"], "2026-03-31");
+}
+
+// from в будущем без to — тот же текст «Период неверен», запроса нет;
+// битая дата — прежний текст про формат.
+TEST(tools_search_default_period_errors) {
+    Env e;
+    CHECK_EQ(e.error("search_operations", {{"from", "2026-11-05"}}),
+             std::string("Период неверен: from (2026-11-05) позже to (2026-10-31)."));
+    CHECK(contains(e.error("search_operations", {{"to", "2026-02-30"}}), "Дата to \"2026-02-30\" неверна"));
+    CHECK_EQ(e.reports.count("/api/reports/operations"), 0);
+}
+
 // Битый курсор — ошибка инструмента с подсказкой, до wallet-report.
 TEST(tools_search_bad_cursor_is_tool_error) {
     Env e;
