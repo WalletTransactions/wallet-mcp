@@ -316,17 +316,20 @@ TEST(tools_search_defaults_to_expense) {
                       {"to_uuid", "c-ride"}, {"to_name", "Проезд"}}}},
                    {"incomplete", false},
                    {"has_more", true},
+                   {"next_cursor_date", "2026-09-28 12:05:00"},
+                   {"next_cursor_uuid", "0f8c2a1e-7b3d-4c5a-9e6f-1a2b3c4d5e6f"},
                    {"eq_currency_uuid", "c-RUB"},
                    {"total_eq", "1500"},
                    {"total_incomplete", false},
                    {"total_count", 70}});
-    json r = e.ok("search_operations", with(kSeptember, {{"text", "такси"}}));
+    json r = e.ok("search_operations", with(kSeptember, {{"text", json::array({"такси"})}}));
     std::string q = e.reports.last("/api/reports/operations");
     CHECK(contains(q, "kind=expense"));
     CHECK(contains(q, "limit=20"));
     CHECK(contains(q, "q=%D1%82%D0%B0%D0%BA%D1%81%D0%B8"));
     CHECK_EQ(r["kind"], "expense");
     CHECK_EQ(r["has_more"], true);
+    CHECK_EQ(r["next_cursor"], "2026-09-28 12:05:00|0f8c2a1e-7b3d-4c5a-9e6f-1a2b3c4d5e6f");
     CHECK_EQ(r["total"], "1500.00");
     CHECK_EQ(r["count"], 70);
     CHECK_EQ(r["operations"][0], (json{{"date", "2026-09-28 12:05"}, {"kind", "expense"}, {"amount", "450.00"},
@@ -351,7 +354,7 @@ TEST(tools_search_any_with_text_is_balance) {
     e.reports.set("/api/reports/operations",
                   {{"operations", json::array()}, {"incomplete", false}, {"has_more", false}, {"eq_currency_uuid", "c-RUB"},
                    {"total_eq", "2000"}, {"total_incomplete", false}, {"total_count", 2}});
-    json r = e.ok("search_operations", with(kSeptember, {{"kind", "any"}, {"text", "Иван"}}));
+    json r = e.ok("search_operations", with(kSeptember, {{"kind", "any"}, {"text", json::array({"Иван"})}}));
     CHECK(!contains(e.reports.last("/api/reports/operations"), "kind="));
     CHECK_EQ(r["total"], "2000.00");
     CHECK_EQ(r["kind"], "any");
@@ -389,7 +392,7 @@ TEST(tools_search_without_total_from_report_is_unavailable) {
     // wallet-report без фильтров ленты молча игнорирует их и не отдаёт итог.
     e.reports.set("/api/reports/operations",
                   {{"operations", json::array()}, {"incomplete", false}, {"has_more", false}, {"eq_currency_uuid", "c-RUB"}});
-    tools::Outcome o = e.call("search_operations", with(kSeptember, {{"text", "такси"}}));
+    tools::Outcome o = e.call("search_operations", with(kSeptember, {{"text", json::array({"такси"})}}));
     CHECK(o.kind == tools::Outcome::Kind::Unavailable);
     CHECK_EQ(o.text, tools::kReportsUnavailable);
 }
@@ -499,6 +502,77 @@ TEST(tools_search_exclude_categories) {
     // Исключение — фильтр: итог есть и при kind "any".
     CHECK_EQ(r["total"], "777.70");
     CHECK_EQ(r["count"], 12);
+}
+
+// Несколько вариантов text — повторённый q, по одному на вариант; пустые
+// и повторы не уходят; итог — из ответа wallet-report (SQL по объединению).
+TEST(tools_search_text_variants_as_repeated_q) {
+    Env e;
+    e.reports.set("/api/reports/operations",
+                  {{"operations", json::array()}, {"incomplete", false}, {"has_more", false}, {"eq_currency_uuid", "c-RUB"},
+                   {"total_eq", "57"}, {"total_incomplete", false}, {"total_count", 4}});
+    json r = e.ok("search_operations",
+                  with(kSeptember, {{"text", json::array({"стриж", " barber ", "", "стриж", "haircut"})}}));
+    std::string q = e.reports.last("/api/reports/operations");
+    CHECK(contains(q, "&q=%D1%81%D1%82%D1%80%D0%B8%D0%B6&q=barber&q=haircut"));
+    CHECK_EQ(q.find("&q=", q.find("haircut")), std::string::npos); // ровно три q
+    CHECK_EQ(r["total"], "57.00");
+    CHECK_EQ(r["count"], 4);
+
+    // Только пустые варианты — фильтра по тексту нет (как text не задан).
+    e.ok("search_operations", with(kSeptember, {{"text", json::array({" ", ""})}}));
+    CHECK(!contains(e.reports.last("/api/reports/operations"), "q="));
+}
+
+// has_more — next_cursor «дата|uuid»; cursor уходит в wallet-report парой
+// cursor_date/cursor_uuid вместе с теми же фильтрами; итог тот же.
+TEST(tools_search_cursor_pages) {
+    Env e;
+    const std::string u = "0f8c2a1e-7b3d-4c5a-9e6f-1a2b3c4d5e6f";
+    e.reports.push("/api/reports/operations",
+                   {{"operations", json::array()}, {"incomplete", false}, {"has_more", true},
+                    {"next_cursor_date", "2026-09-20 18:30:00"}, {"next_cursor_uuid", u},
+                    {"eq_currency_uuid", "c-RUB"}, {"total_eq", "900"}, {"total_incomplete", false}, {"total_count", 30}});
+    e.reports.push("/api/reports/operations",
+                   {{"operations", json::array()}, {"incomplete", false}, {"has_more", false},
+                    {"eq_currency_uuid", "c-RUB"}, {"total_eq", "900"}, {"total_incomplete", false}, {"total_count", 30}});
+    json first = e.ok("search_operations", with(kSeptember, {{"limit", 20}}));
+    CHECK(!contains(e.reports.last("/api/reports/operations"), "cursor_"));
+    CHECK_EQ(first["has_more"], true);
+    CHECK_EQ(first["next_cursor"], "2026-09-20 18:30:00|" + u);
+
+    json second = e.ok("search_operations", with(kSeptember, {{"limit", 20}, {"cursor", first["next_cursor"]}}));
+    std::string q = e.reports.last("/api/reports/operations");
+    CHECK(contains(q, "cursor_date=2026-09-20%2018%3A30%3A00"));
+    CHECK(contains(q, "cursor_uuid=" + u));
+    CHECK(contains(q, "kind=expense"));
+    CHECK_EQ(second["has_more"], false);
+    CHECK(!second.contains("next_cursor"));
+    CHECK_EQ(second["total"], first["total"]);
+    CHECK_EQ(second["count"], 30);
+}
+
+// Битый курсор — ошибка инструмента с подсказкой, до wallet-report.
+TEST(tools_search_bad_cursor_is_tool_error) {
+    Env e;
+    const std::string u = "0f8c2a1e-7b3d-4c5a-9e6f-1a2b3c4d5e6f";
+    const std::vector<std::string> bads = {"abc", "2026-09-20 18:30:00", "2026-09-20 18:30:00|xyz",
+                                           "2026-13-01 00:00:00|" + u, "2026-09-20;DROP|" + u, "|" + u};
+    for (const std::string& bad : bads) {
+        tools::Outcome o = e.call("search_operations", with(kSeptember, {{"cursor", bad}}));
+        CHECK(o.kind == tools::Outcome::Kind::ToolError);
+        CHECK_EQ(o.text, std::string("cursor неверен: передайте next_cursor из прошлого ответа без изменений."));
+    }
+    CHECK_EQ(e.reports.count("/api/reports/operations"), 0);
+}
+
+// has_more без курсора от wallet-report — ответ не по контракту.
+TEST(tools_search_has_more_without_cursor_is_unavailable) {
+    Env e;
+    e.reports.set("/api/reports/operations",
+                  {{"operations", json::array()}, {"incomplete", false}, {"has_more", true}, {"eq_currency_uuid", "c-RUB"}});
+    tools::Outcome o = e.call("search_operations", with(kSeptember, {{"kind", "any"}}));
+    CHECK(o.kind == tools::Outcome::Kind::Unavailable);
 }
 
 TEST(tools_spending_count_and_average) {

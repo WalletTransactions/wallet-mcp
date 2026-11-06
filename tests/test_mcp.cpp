@@ -195,11 +195,21 @@ TEST(mcp_schema_validation) {
     CHECK(invalid("search_operations", {{"from", "a"}, {"to", "b"}, {"limit", 2.5}}));
     CHECK(!invalid("search_operations", {{"from", "a"}, {"to", "b"}, {"limit", 50}}));
     CHECK(!invalid("search_operations", {{"from", "a"}, {"to", "b"}, {"limit", 20.0}}));
-    CHECK(invalid("search_operations", {{"from", "a"}, {"to", "b"}, {"text", std::string(101, 'x')}}));
+    // text — массив вариантов: 1..10, каждый до 100 символов.
+    CHECK(invalid("search_operations", {{"from", "a"}, {"to", "b"}, {"text", json::array({std::string(101, 'x')})}}));
+    CHECK(invalid("search_operations", {{"from", "a"}, {"to", "b"}, {"text", json::array({"ок", std::string(101, 'x')})}}));
     // 100 символов кириллицы — 200 байт, но в лимите.
     std::string cyr;
     for (int i = 0; i < 100; ++i) cyr += "я";
-    CHECK(!invalid("search_operations", {{"from", "a"}, {"to", "b"}, {"text", cyr}}));
+    CHECK(!invalid("search_operations", {{"from", "a"}, {"to", "b"}, {"text", json::array({cyr})}}));
+    CHECK(invalid("search_operations", {{"from", "a"}, {"to", "b"}, {"text", "такси"}})); // строка — не массив
+    CHECK(invalid("search_operations", {{"from", "a"}, {"to", "b"}, {"text", json::array()}}));
+    CHECK(!invalid("search_operations", {{"from", "a"}, {"to", "b"}, {"text", json(std::vector<std::string>(10, "x"))}}));
+    CHECK(invalid("search_operations", {{"from", "a"}, {"to", "b"}, {"text", json(std::vector<std::string>(11, "x"))}}));
+    CHECK(invalid("search_operations", {{"from", "a"}, {"to", "b"}, {"text", json::array({1})}}));
+    CHECK(!invalid("search_operations", {{"from", "a"}, {"to", "b"}, {"cursor", "2026-09-20 18:30:00|x"}}));
+    CHECK(invalid("search_operations", {{"from", "a"}, {"to", "b"}, {"cursor", 5}}));
+    CHECK(invalid("search_operations", {{"from", "a"}, {"to", "b"}, {"cursor", std::string(81, 'x')}}));
     // months_of_year: целые 1..12 без повторов.
     const json p = {{"from", "a"}, {"to", "b"}};
     auto moy = [&](json v) {

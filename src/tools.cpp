@@ -39,6 +39,8 @@ namespace {
 
 constexpr int kMaxNames = 50;     // столько uuid wallet-report принимает в фильтре
 constexpr int kMaxTextChars = 100; // q у /operations
+constexpr int kMaxTextVariants = 10; // повторов q у /operations
+constexpr int kMaxCursorChars = 80;  // «дата|uuid»: 26 + 1 + 36 с запасом
 constexpr int kDefaultLimit = 20;
 constexpr std::size_t kCommentBytes = 120;
 
@@ -132,17 +134,23 @@ json build_registry() {
     tools.push_back(tool(
         "search_operations",
         "Поиск операций за период по комментарию (text), категориям (categories или все, кроме "
-        "exclude_categories), кошелькам и типу kind. Возвращает до limit "
-        "последних операций (has_more: true — есть ещё) и total — сумму ВСЕХ подходящих операций периода, "
-        "посчитанную сервером, и count — их число. kind по умолчанию \"expense\": total — сколько потрачено, "
+        "exclude_categories), кошелькам и типу kind. text — список вариантов: подходит комментарий с ЛЮБЫМ из "
+        "них, поэтому синонимы и переводы передавай одним вызовом, например [\"стриж\", \"парикмах\", "
+        "\"barber\", \"haircut\"]. Возвращает до limit последних операций; has_more: true — есть более ранние, "
+        "тогда в ответе next_cursor: передай его в cursor с теми же остальными аргументами, чтобы получить "
+        "следующую страницу. total — сумма ВСЕХ подходящих операций периода, "
+        "посчитанная сервером, и count — их число, одни и те же на любой странице. kind по умолчанию \"expense\": total — сколько потрачено, "
         "неотрицательное. kind \"income\" и \"transfer\" — сумма доходов или переводов. kind \"any\" — все "
         "типы, тогда total — сальдо: доходы минус расходы, прямые переводы между кошельками в него не входят; "
         "при \"any\" без других фильтров total нет.",
         {{"from", from},
          {"to", to},
-         {"text", {{"type", "string"},
-                   {"maxLength", kMaxTextChars},
-                   {"description", "Подстрока комментария, без учёта регистра, до 100 символов"}}},
+         {"text", {{"type", "array"},
+                   {"items", {{"type", "string"}, {"maxLength", kMaxTextChars}}},
+                   {"minItems", 1},
+                   {"maxItems", kMaxTextVariants},
+                   {"description", "Варианты подстроки комментария (до 10, каждый до 100 символов), без учёта "
+                                   "регистра; подходит комментарий с любым из них"}}},
          {"categories", names_prop("Имена категорий")},
          {"exclude_categories", exclude},
          {"wallets", names_prop("Имена кошельков")},
@@ -153,6 +161,10 @@ json build_registry() {
                     {"minimum", 1},
                     {"maximum", 50},
                     {"description", "Сколько операций показать, 1..50, по умолчанию 20"}}},
+         {"cursor", {{"type", "string"},
+                     {"maxLength", kMaxCursorChars},
+                     {"description", "next_cursor из прошлого ответа — следующая страница. Передавай без "
+                                     "изменений, остальные аргументы — те же"}}},
          {"currency", currency_prop()}},
         {"from", "to"}));
     return {{"tools", tools}};
@@ -212,6 +224,8 @@ void check_value(const std::string& key, const json& value, const json& schema) 
                 check_value(key, item, schema["items"]);
             } else if (!item.is_string()) {
                 bad(expected);
+            } else {
+                check_value(key, item, schema["items"]); // maxLength элемента (text)
             }
         }
         if (schema.value("uniqueItems", false)) {
@@ -878,11 +892,64 @@ std::string op_date(const std::string& raw) {
     return d.substr(0, 16);
 }
 
+// Курсор страницы search_operations: «<next_cursor_date>|<next_cursor_uuid>»
+// из ответа wallet-report. Проверяем форму до запроса: битый курсор дал бы
+// 400 wallet-report, а модель увидела бы «Отчёты временно недоступны» вместо
+// подсказки, что делать.
+constexpr char kCursorSep = '|';
+const char* const kBadCursor = "cursor неверен: передайте next_cursor из прошлого ответа без изменений.";
+
+struct Cursor {
+    std::string date; // пусто — первая страница
+    std::string uuid;
+};
+
+bool is_uuid(const std::string& s) {
+    if (s.size() != 36) return false;
+    for (std::size_t i = 0; i < s.size(); ++i) {
+        const bool dash = i == 8 || i == 13 || i == 18 || i == 23;
+        if (dash ? s[i] != '-' : !std::isxdigit(static_cast<unsigned char>(s[i]))) return false;
+    }
+    return true;
+}
+
+// Дата курсора — timestamp Postgres текстом («2026-03-04 00:00:00» или с
+// дробью секунд); достаточно, что начинается с ГГГГ-ММ-ДД и дальше только
+// цифры, пробел/T, «:» и «.».
+bool is_cursor_date(const std::string& s) {
+    if (s.size() < 10 || s.size() > 26 || !dates::parse(s.substr(0, 10))) return false;
+    for (std::size_t i = 10; i < s.size(); ++i) {
+        unsigned char ch = static_cast<unsigned char>(s[i]);
+        if (!std::isdigit(ch) && ch != ' ' && ch != 'T' && ch != ':' && ch != '.') return false;
+    }
+    return true;
+}
+
+Cursor cursor_arg(const json& args) {
+    std::string raw = trim(str_arg(args, "cursor"));
+    if (raw.empty()) return {};
+    std::size_t sep = raw.find(kCursorSep);
+    if (sep == std::string::npos) throw ToolFailure(kBadCursor);
+    Cursor c{raw.substr(0, sep), raw.substr(sep + 1)};
+    if (!is_cursor_date(c.date) || !is_uuid(c.uuid)) throw ToolFailure(kBadCursor);
+    return c;
+}
+
 ojson search_operations(Call& c, const json& args) {
     Period p = period_arg(args, "from", "to");
     check_category_lists(args);
     std::string kind = has(args, "kind") ? args["kind"].get<std::string>() : "expense";
-    std::string q = trim(str_arg(args, "text"));
+    // Варианты текста — повторённым q у wallet-report: ИЛИ и итог по
+    // объединению считает SQL (операция под двумя вариантами — один раз).
+    // Пустые после trim и повторы отбрасываются.
+    std::vector<std::string> qs;
+    if (has(args, "text")) {
+        for (const auto& v : args["text"]) {
+            std::string t = trim(v.get<std::string>());
+            if (!t.empty() && std::find(qs.begin(), qs.end(), t) == qs.end()) qs.push_back(t);
+        }
+    }
+    Cursor cursor = cursor_arg(args);
     int limit = has(args, "limit") ? static_cast<int>(args["limit"].get<double>()) : kDefaultLimit;
     Eq eq = c.currency(args);
     std::vector<text::Named> cats = resolve_all(c, args, "categories", false);
@@ -902,8 +969,12 @@ ojson search_operations(Call& c, const json& args) {
     if (!excluded.empty()) params.emplace_back("exclude_category_uuid", uuids(excluded));
     if (!wallets.empty()) params.emplace_back("wallet_uuid", uuids(wallets));
     if (kind != "any") params.emplace_back("kind", kind);
-    if (!q.empty()) params.emplace_back("q", q);
-    bool filtered = !cats.empty() || !excluded.empty() || !wallets.empty() || kind != "any" || !q.empty();
+    for (const auto& q : qs) params.emplace_back("q", q);
+    if (!cursor.date.empty()) {
+        params.emplace_back("cursor_date", cursor.date);
+        params.emplace_back("cursor_uuid", cursor.uuid);
+    }
+    bool filtered = !cats.empty() || !excluded.empty() || !wallets.empty() || kind != "any" || !qs.empty();
 
     json body = c.fetch(query("/api/reports/operations", params));
     if (!body.contains("operations") || !body["operations"].is_array()) throw ReportsDown();
@@ -938,8 +1009,18 @@ ojson search_operations(Call& c, const json& args) {
         ops.push_back(std::move(row));
     }
 
+    bool has_more = body.value("has_more", false);
     ojson out = {{"period", p.echo()}, {"currency", eq.iso}, {"kind", kind}, {"operations", ops},
-                 {"has_more", body.value("has_more", false)}};
+                 {"has_more", has_more}};
+    if (has_more) {
+        // Курсор wallet-report — пара (дата, uuid) последней отданной строки;
+        // модели отдаём одной строкой. has_more без курсора — ответ не по
+        // контракту: следующую страницу было бы не запросить.
+        std::string d = body.value("next_cursor_date", "");
+        std::string u = body.value("next_cursor_uuid", "");
+        if (d.empty() || u.empty()) throw ReportsDown();
+        out["next_cursor"] = d + kCursorSep + u;
+    }
     if (filtered) {
         out["total"] = amount(body["total_eq"], eq.precision);
         out["count"] = body.value("total_count", 0);

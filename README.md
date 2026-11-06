@@ -98,7 +98,7 @@ HTTP `200`: `-32700` (не JSON), `-32600` (не JSON-RPC 2.0, батч), `-3260
 | `spending_by_category_by_month` | `from`, `to`, `categories?`, `exclude_categories?`, `months_of_year?`, `currency?` | `rows[{category, amount, count, avg_per_month, by_month?}]`, `months_of_year?`, `total`, `count`, `months`, `avg_per_month`, `incomplete` | `expense-by-category-by-month` ×1 |
 | `income_expense_by_month` | `from`, `to`, `currency?` | `months[{month, income, expense}]`, `incomplete` | `income-expense-by-month` |
 | `balance` | `wallet?`, `date?`, `currency?` | как `list_wallets` на конец дня `date` | `balance?date=<date+1>` |
-| `search_operations` | `from`, `to`, `text?`, `categories?`, `exclude_categories?`, `wallets?`, `kind?`, `limit?`, `currency?` | `operations[{date, kind, amount, currency, category, wallet \| from, to, comment}]`, `has_more`, `total`, `count`, `incomplete`, `kind` | `operations` с `category_uuid`/`exclude_category_uuid`/`wallet_uuid`/`kind`/`q`/`limit` |
+| `search_operations` | `from`, `to`, `text?` (массив вариантов), `categories?`, `exclude_categories?`, `wallets?`, `kind?`, `limit?`, `cursor?`, `currency?` | `operations[{date, kind, amount, currency, category, wallet \| from, to, comment}]`, `has_more`, `next_cursor?`, `total`, `count`, `incomplete`, `kind` | `operations` с `category_uuid`/`exclude_category_uuid`/`wallet_uuid`/`kind`/`q` (повторённый)/`limit`/`cursor_date`+`cursor_uuid` |
 
 Детали:
 
@@ -138,6 +138,18 @@ HTTP `200`: `-32700` (не JSON), `-32600` (не JSON-RPC 2.0, батч), `-3260
   умолчанию 20. Комментарий обрезается до 120 байт. Если фильтр ушёл, а
   итога в ответе нет (wallet-report без фильтров ленты), инструмент
   отвечает «Отчёты временно недоступны».
+  `text` — массив до 10 вариантов (каждый до 100 символов): подходит
+  комментарий с любым из них («стриж», «парикмах», «barber» одним вызовом).
+  Варианты уходят повторённым `q`; пустые после trim и повторы
+  отбрасываются; операция под двумя вариантами в `total`/`count` входит
+  один раз — это считает SQL (wallet-api 000032), а не сервис.
+  При `has_more: true` в ответе есть `next_cursor` — строка
+  `«<дата>|<uuid>»` из `next_cursor_date`/`next_cursor_uuid` wallet-report;
+  её передают в `cursor` с теми же остальными аргументами. `total` и `count`
+  на любой странице одинаковые. Курсор не той формы — `isError` «cursor
+  неверен: передайте next_cursor из прошлого ответа без изменений.» до
+  обращения к wallet-report; `has_more` без курсора в ответе wallet-report —
+  «Отчёты временно недоступны».
 - **Ошибки.** Аргумент не по `inputSchema` (лишний ключ, неверный тип, вне
   enum или диапазона, повтор в `months_of_year`) — JSON-RPC `-32602`. `null` у необязательного
   аргумента считается отсутствием. Ошибка смысла — `isError: true` с
