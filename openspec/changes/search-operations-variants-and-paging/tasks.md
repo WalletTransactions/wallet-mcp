@@ -15,8 +15,8 @@
 
 ## 4. Живой стек
 
-- [ ] 4.1 После выкладки wallet-api 000032, wallet-report `search-text-variants` и этого change на test — через гейтвей `/api/mcp/`: `search_operations(2020-01-01, today, text: ["стриж", "парикмах", "barber", "haircut"])` даёт `count` = сумме `count` по отдельным вызовам минус пересечения; `limit: 5` → `next_cursor` → вторая страница без повторов. Проверка: вывод curl приложен к тест-задаче
-- [ ] 4.2 Живой прогон из LM Studio: «когда я последний раз стригся?». Проверка: в логе wallet-mcp один вызов `search_operations` с массивом вариантов в `text`
+- [x] 4.1 После выкладки wallet-api 000032, wallet-report `search-text-variants` и этого change на test — через гейтвей `/api/mcp/`: `search_operations(2020-01-01, today, text: ["стриж", "парикмах", "barber", "haircut"])` даёт `count` = сумме `count` по отдельным вызовам минус пересечения; `limit: 5` → `next_cursor` → вторая страница без повторов. Проверка: вывод curl приложен к тест-задаче — проверено 2026-11-06 на test (wallet-api 0.3.0-rc.3, wallet-report 0.2.0-rc.2, wallet-mcp 0.3.0-rc.2) через гейтвей `/api/mcp/`, 2020-01-01…2026-11-06: по отдельности «стриж» 21 (257.10 EUR), «парикмах» 1 (15.00), «barber» 0, «haircut» 0; все четыре одним вызовом — `count` 22, `total` 272.10 = объединение без пересечений; `limit: 5` → 5 страниц (5+5+5+5+2) по `next_cursor`, 22 строки без повторов, тот же набор; битый `cursor` — `isError` «cursor неверен: передайте next_cursor из прошлого ответа без изменений.»
+- [ ] 4.2 Живой прогон из LM Studio: «когда я последний раз стригся?». Проверка: в логе wallet-mcp один вызов `search_operations` с массивом вариантов в `text` — 2026-11-06 на test (LM Studio `wallet-parse`, веб-чат): не пройдено — модель сделала один вызов, но с одним вариантом `search_operations(text=["стриж"])`, синонимов не подставила; ответ — 07.09.2026 («Машинка для стрижки волос», Electronics) вместо 04.03.2026. Качество модели/промпта wallet-ai, не wallet-mcp
 
 ## Workflow follow-up
 
