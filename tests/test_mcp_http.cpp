@@ -165,7 +165,7 @@ TEST(http_tool_log_has_no_arguments_or_sums) {
                    {"total_eq", "777.77"}, {"total_incomplete", false}, {"total_count", 1}});
     fakes::CaptureLog log;
     httplib::Response res = e.post(
-        R"({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"search_operations","arguments":{"from":"2026-09-01","to":"2026-09-30","text":"няня Маша"}}})",
+        R"({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"search_operations","arguments":{"from":"2026-09-01","to":"2026-09-30","text":["няня Маша"]}}})",
         "Bearer " + fakes::token());
     CHECK_EQ(res.status, 200);
     CHECK(res.body.find("777.77") != std::string::npos);
@@ -181,7 +181,7 @@ TEST(http_tool_log_has_no_arguments_or_sums) {
 
     // Отказ wallet-report — тоже без query (в ней даты и текст поиска).
     e.reports.set("/api/reports/operations", {{"error", "boom"}}, 500);
-    e.post(R"({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"search_operations","arguments":{"from":"2026-09-01","to":"2026-09-30","text":"няня Маша"}}})",
+    e.post(R"({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"search_operations","arguments":{"from":"2026-09-01","to":"2026-09-30","text":["няня Маша"]}}})",
            "Bearer " + fakes::token());
     text = log.text();
     CHECK(text.find("\"result\":\"unavailable\"") != std::string::npos);
