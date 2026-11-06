@@ -142,9 +142,11 @@ json build_registry() {
         "посчитанная сервером, и count — их число, одни и те же на любой странице. kind по умолчанию \"expense\": total — сколько потрачено, "
         "неотрицательное. kind \"income\" и \"transfer\" — сумма доходов или переводов. kind \"any\" — все "
         "типы, тогда total — сальдо: доходы минус расходы, прямые переводы между кошельками в него не входят; "
-        "при \"any\" без других фильтров total нет.",
-        {{"from", from},
-         {"to", to},
+        "при \"any\" без других фильтров total нет. Период необязателен: без to — по сегодня, без from — с "
+        "начала истории (в ответе period.from: null). Для вопросов «когда последний раз…», «когда впервые…» "
+        "период не задавай.",
+        {{"from", date_prop("Начало периода, ГГГГ-ММ-ДД, день включается. Не задан — с начала истории")},
+         {"to", date_prop("Конец периода, ГГГГ-ММ-ДД, день включается. Не задан — сегодня")},
          {"text", {{"type", "array"},
                    {"items", {{"type", "string"}, {"maxLength", kMaxTextChars}}},
                    {"minItems", 1},
@@ -165,8 +167,7 @@ json build_registry() {
                      {"maxLength", kMaxCursorChars},
                      {"description", "next_cursor из прошлого ответа — следующая страница. Передавай без "
                                      "изменений, остальные аргументы — те же"}}},
-         {"currency", currency_prop()}},
-        {"from", "to"}));
+         {"currency", currency_prop()}}));
     return {{"tools", tools}};
 }
 
@@ -935,8 +936,29 @@ Cursor cursor_arg(const json& args) {
     return c;
 }
 
-ojson search_operations(Call& c, const json& args) {
-    Period p = period_arg(args, "from", "to");
+// «Начало истории» для search_operations без from: самая ранняя дата, которую
+// принимает dates::parse, — раньше неё операций быть не может. Наружу не
+// показывается: в ответе period.from — null («с начала истории»), чтобы
+// модель не пересказывала пользователю «с 1900 года».
+const dates::Date kHistoryStart{1900, 1, 1};
+
+// Период search_operations: обе границы необязательны (search-default-period).
+// to — сегодня в поясе MCP_TZ (ctx.today): модель в LM Studio не видит
+// instructions с сегодняшней датой и подставляет выдуманную. Проверка
+// порядка границ — та же, что у period_arg.
+Period search_period(const json& args, const dates::Date& today, bool& from_given) {
+    from_given = has(args, "from");
+    Period p{from_given ? date_arg(args, "from") : kHistoryStart, has(args, "to") ? date_arg(args, "to") : today};
+    if (p.to < p.from) {
+        throw ToolFailure("Период неверен: from (" + dates::to_string(p.from) + ") позже to (" +
+                          dates::to_string(p.to) + ").");
+    }
+    return p;
+}
+
+ojson search_operations(Call& c, const json& args, const Context& ctx) {
+    bool from_given = false;
+    Period p = search_period(args, ctx.today, from_given);
     check_category_lists(args);
     std::string kind = has(args, "kind") ? args["kind"].get<std::string>() : "expense";
     // Варианты текста — повторённым q у wallet-report: ИЛИ и итог по
@@ -1010,7 +1032,9 @@ ojson search_operations(Call& c, const json& args) {
     }
 
     bool has_more = body.value("has_more", false);
-    ojson out = {{"period", p.echo()}, {"currency", eq.iso}, {"kind", kind}, {"operations", ops},
+    ojson period = p.echo();
+    if (!from_given) period["from"] = nullptr; // с начала истории
+    ojson out = {{"period", period}, {"currency", eq.iso}, {"kind", kind}, {"operations", ops},
                  {"has_more", has_more}};
     if (has_more) {
         // Курсор wallet-report — пара (дата, uuid) последней отданной строки;
@@ -1082,7 +1106,7 @@ Outcome call(const std::string& name, const json& arguments, Context& ctx) {
         } else if (name == "balance") {
             result = balance(c, arguments, ctx);
         } else if (name == "search_operations") {
-            result = search_operations(c, arguments);
+            result = search_operations(c, arguments, ctx);
         }
         out.kind = Outcome::Kind::Ok;
         out.text = result.dump();

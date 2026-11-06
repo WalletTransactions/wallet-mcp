@@ -187,6 +187,12 @@ TEST(mcp_schema_validation) {
     CHECK(invalid("spending_by_category", {{"from", "a"}, {"to", "b"}, {"categories", json::array()}}));
     CHECK(invalid("spending_by_category", {{"from", "a"}, {"to", "b"}, {"categories", {1, 2}}}));
     CHECK(!invalid("spending_by_category", {{"from", "a"}, {"to", "b"}, {"categories", nullptr}}));
+    // search_operations: период необязателен (search-default-period); у остальных — обязателен.
+    CHECK(!invalid("search_operations", json::object()));
+    CHECK(!invalid("search_operations", {{"text", json::array({"стриж"})}}));
+    CHECK(!invalid("search_operations", {{"to", "2026-10-31"}}));
+    CHECK(invalid("search_operations", {{"from", 20260901}}));
+    CHECK(invalid("income_expense_by_month", {{"from", "2026-09-01"}}));
     CHECK(invalid("search_operations", {{"from", "a"}, {"to", "b"}, {"kind", "spending"}}));
     CHECK(!invalid("search_operations", {{"from", "a"}, {"to", "b"}, {"kind", "any"}}));
     CHECK(invalid("search_operations", {{"from", "a"}, {"to", "b"}, {"limit", 0}}));
