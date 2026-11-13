@@ -23,6 +23,10 @@ constexpr const char* kExchangeMetric = "mcp_token_exchange_total";
 constexpr const char* kExchangeHelp = "Обмены предъявленного токена на JWT для wallet-report в google-auth по исходу и виду.";
 constexpr const char* kCacheMetric = "mcp_token_cache_total";
 constexpr const char* kCacheHelp = "Обращения к кешу JWT по предъявленному токену: hit/miss.";
+constexpr const char* kDocsExchangeMetric = "mcp_docs_token_exchange_total";
+constexpr const char* kDocsExchangeHelp = "Обмены предъявленного токена на JWT для wallet-docs в google-auth по исходу и виду.";
+constexpr const char* kDocsCacheMetric = "mcp_docs_token_cache_total";
+constexpr const char* kDocsCacheHelp = "Обращения к кешу JWT для wallet-docs: hit/miss.";
 constexpr unsigned kSweepEvery = 100;
 // Глубже цепочки act в стеке не бывает (wallet-ai → wallet-mcp); предел —
 // защита от вложенного мусора, а не политика.
@@ -147,8 +151,8 @@ VerifiedJwt verify_jwt(const std::string& token, const KeyLookup& keys) {
     return v;
 }
 
-TokenCache::TokenCache(auth::AuthApi& api, Clock clock, WallClock wall)
-    : api_(api), clock_(std::move(clock)), wall_(std::move(wall)) {}
+TokenCache::TokenCache(auth::AuthApi& api, Clock clock, WallClock wall, std::string audience)
+    : api_(api), clock_(std::move(clock)), wall_(std::move(wall)), audience_(std::move(audience)) {}
 
 Session TokenCache::get(const Presented& presented) {
     std::string key = token_key(presented.token);
@@ -159,13 +163,15 @@ Session TokenCache::get(const Presented& presented) {
         auto it = entries_.find(key);
         if (it != entries_.end()) {
             if (now < it->second.valid_until) {
-                metrics::inc_counter(kCacheMetric, kCacheHelp, "result", "hit");
+                metrics::inc_counter(audience_.empty() ? kCacheMetric : kDocsCacheMetric,
+                                     audience_.empty() ? kCacheHelp : kDocsCacheHelp, "result", "hit");
                 return {auth::Exchange::Result::Ok, key, it->second.jwt, it->second.user_id};
             }
             entries_.erase(it);
         }
     }
-    metrics::inc_counter(kCacheMetric, kCacheHelp, "result", "miss");
+    metrics::inc_counter(audience_.empty() ? kCacheMetric : kDocsCacheMetric,
+                         audience_.empty() ? kCacheHelp : kDocsCacheHelp, "result", "miss");
     // Обмен — вне мьютекса: параллельные промахи по одному токену дадут два
     // обмена, это допустимо, а остальные токены не ждут google-auth.
     return exchange(presented, key);
@@ -187,8 +193,9 @@ std::size_t TokenCache::size() const {
 
 Session TokenCache::exchange(const Presented& presented, const std::string& key) {
     const bool is_jwt = presented.kind == Credential::Jwt;
-    auth::Exchange ex = is_jwt ? api_.exchange_jwt(presented.token) : api_.exchange(presented.token);
-    metrics2::inc_counter(kExchangeMetric, kExchangeHelp,
+    auth::Exchange ex = is_jwt ? api_.exchange_jwt(presented.token, audience_) : api_.exchange(presented.token, audience_);
+    metrics2::inc_counter(audience_.empty() ? kExchangeMetric : kDocsExchangeMetric,
+                          audience_.empty() ? kExchangeHelp : kDocsExchangeHelp,
                           {{"result", auth::to_string(ex.result)}, {"kind", to_string(presented.kind)}});
     Session s;
     s.result = ex.result;

@@ -18,6 +18,7 @@
 #include "clients/reports_client.hpp"
 #include "dates.hpp"
 #include "directory.hpp"
+#include "docs_client.hpp"
 #include "docs.hpp"
 #include "httplib.h"
 #include "mcp_http.hpp"
@@ -102,6 +103,21 @@ int main() {
     mcphttp::Deps deps{tokens, *reports_api, directory, tz_name, version::kVersion};
     if (!exchange_secret.empty()) deps.jwt_keys = mcpaccess::lazy_jwks(auth_url);
 
+    // Справка (change docs-tool): необязательна — пустой WALLET_DOCS_URL, и
+    // ask_docs нет в tools/list. Отдельный кеш JWT с audience wallet-docs.
+    std::string docs_url = strip_trailing_slash(env_or("WALLET_DOCS_URL", ""));
+    std::unique_ptr<docsclient::DocsApi> docs_api;
+    std::unique_ptr<mcpaccess::TokenCache> docs_tokens;
+    if (docs_url.empty()) {
+        applog::info("docs tool disabled (WALLET_DOCS_URL empty)");
+    } else {
+        docs_api = docsclient::make_http_api(docs_url);
+        docs_tokens = std::make_unique<mcpaccess::TokenCache>(*auth_api, mcpaccess::steady_clock(),
+                                                              mcpaccess::wall_clock(), "wallet-docs");
+        deps.docs = docs_api.get();
+        deps.docs_tokens = docs_tokens.get();
+    }
+
     httplib::Server svr;
     svr.set_pre_routing_handler(handle_pre_routing);
     // Лимит тела (спека mcp-transport): больше 64 КБ — 413 до хендлера, то
@@ -145,7 +161,8 @@ int main() {
     applog::info("wallet-mcp v" + std::string(version::kBuild) + " (" + std::string(version::kGitCommit) +
                  ") listening on http://" + host + ":" + std::to_string(port) + " (google-auth: " + auth_url +
                  ", wallet-report: " + report_url + ", MCP_TZ: " + tz_name +
-                 ", JWT access: " + (exchange_secret.empty() ? "off" : "on") + ")");
+                 ", JWT access: " + (exchange_secret.empty() ? "off" : "on") +
+                 ", docs: " + (docs_url.empty() ? "off" : docs_url) + ")");
     if (!svr.listen(host, port)) {
         applog::error("не удалось запустить сервер на " + host + ":" + std::to_string(port) +
                       " (порт занят или недоступен?)");

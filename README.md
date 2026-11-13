@@ -99,9 +99,24 @@ HTTP `200`: `-32700` (не JSON), `-32600` (не JSON-RPC 2.0, батч), `-3260
 | `income_expense_by_month` | `from`, `to`, `currency?` | `months[{month, income, expense}]`, `incomplete` | `income-expense-by-month` |
 | `balance` | `wallet?`, `date?`, `currency?` | как `list_wallets` на конец дня `date` | `balance?date=<date+1>` |
 | `search_operations` | `from?`, `to?`, `text?` (массив вариантов), `categories?`, `exclude_categories?`, `wallets?`, `kind?`, `limit?`, `cursor?`, `currency?` | `operations[{date, kind, amount, currency, category, wallet \| from, to, comment}]`, `has_more`, `next_cursor?`, `total`, `count`, `incomplete`, `kind` | `operations` с `category_uuid`/`exclude_category_uuid`/`wallet_uuid`/`kind`/`q` (повторённый)/`limit`/`cursor_date`+`cursor_uuid` |
+| `ask_docs` | `question` (до 1000 символов) | `answer`, `sources[{repo, capability, heading}]` — как есть от wallet-docs; данных кошелька не читает. Только при заданном `WALLET_DOCS_URL` | `POST {WALLET_DOCS_URL}/api/docs/ask` (wallet-docs) |
 
 Детали:
 
+- **`ask_docs`.** Необязательный восьмой инструмент: ответ на вопрос «как
+  работает система, приложение или MCP» по OpenSpec-спекам сервиса
+  wallet-docs. Без `WALLET_DOCS_URL` его нет в `tools/list`, `tools/call` с
+  этим именем — `-32602`, остальные семь работают как прежде. Для вызова
+  сервис берёт у google-auth отдельный JWT (`aud` = `wallet-docs`, `scope` =
+  `docs:ask`, кеш отдельный от JWT для wallet-report); область разделов
+  определяет wallet-docs по JWT, у инструмента нет аргументов области.
+  Отказы — `isError` с текстами: «Слишком много вопросов, повторите через N
+  с.» (6 в минуту на пользователя, общий лимит с вебом), «Справка временно
+  недоступна, попробуйте позже.», «Справка недоступна для этого токена.»,
+  «Вопрос не принят: …», «Вопрос пустой.». Текст вопроса и ответа в журнал и
+  метрики не пишется: в `mcp_tool_call` только `sources` (число источников).
+  Порядок включения: google-auth `docs-mcp-audience` → wallet-docs
+  `mcp-scope` → wallet-mcp → `WALLET_DOCS_URL` в окружении последним.
 - **`spending_by_category`.** С `categories` в ответе только эти строки.
   Категория без трат даёт сумму `0.00` (по `precision` валюты). `total` — точная сумма строк, строка
   без курса в него не входит и ставит `incomplete: true`. Без `categories`
@@ -177,6 +192,7 @@ HTTP `200`: `-32700` (не JSON), `-32600` (не JSON-RPC 2.0, батч), `-3260
 | `AUTH_SERVICE_URL` | — (обязательна) | google-auth по сети контура: `POST /internal/mcp/token`, `POST /internal/token/exchange`, JWKS |
 | `AUTH_EXCHANGE_SECRET` | пусто | `X-Service-Secret` wallet-mcp для обмена JWT (секрет `wallet-mcp` в `TOKEN_EXCHANGE_SECRETS` google-auth). Пусто — приём JWT выключен, в логе старта `JWT access disabled (AUTH_EXCHANGE_SECRET empty)`, `wmcp_…` работает |
 | `WALLET_REPORT_URL` | — (обязательна) | wallet-report напрямую, не через гейтвей |
+| `WALLET_DOCS_URL` | пусто | wallet-docs напрямую (`http://wallet-docs:8089`). Пусто — инструмента `ask_docs` нет, в логе старта `docs tool disabled (WALLET_DOCS_URL empty)` |
 | `PORT` | `8088` | |
 | `HOST` | `127.0.0.1` | в контейнере — `0.0.0.0` |
 | `MCP_TZ` | `UTC` | пояс IANA для «сегодня»; неизвестный — сервис не стартует |
@@ -188,7 +204,7 @@ HTTP `200`: `-32700` (не JSON), `-32600` (не JSON-RPC 2.0, батч), `-3260
 переменные окружения процесса приоритетнее. Пример — `.env.example`.
 
 Таймауты: google-auth — соединение 3 с, ответ 5 с. wallet-report — 5 с и
-15 с (`clients/reports_client` из wallet-common). Гейтвей ждёт 30 с.
+15 с (`clients/reports_client` из wallet-common). wallet-docs — 3 с и 25 с. Гейтвей ждёт 30 с.
 
 ## Логи и метрики
 

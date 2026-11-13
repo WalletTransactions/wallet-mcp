@@ -44,7 +44,7 @@ Reply call_tool(const json& id, const json& params, const Handlers& h) {
         return error_reply(id, kInvalidParams, "tools/call: нужен params.name");
     }
     const std::string name = params["name"].get<std::string>();
-    if (!tools::exists(name)) return error_reply(id, kInvalidParams, "Неизвестный инструмент: " + name);
+    if (!tools::exists(name, h.docs_enabled)) return error_reply(id, kInvalidParams, "Неизвестный инструмент: " + name);
     json arguments = params.contains("arguments") && !params["arguments"].is_null() ? params["arguments"] : json::object();
 
     auto started = std::chrono::steady_clock::now();
@@ -65,11 +65,10 @@ Reply call_tool(const json& id, const json& params, const Handlers& h) {
                           {{"tool", name}, {"result", result}, {"credential", h.credential}});
     metrics::observe_duration("mcp_tool_duration_seconds", "Длительность вызова инструмента MCP.", "tool", name,
                               seconds);
-    applog::info("tool " + name + " -> " + result, {{"event", "mcp_tool_call"},
-                                                     {"tool", name},
-                                                     {"result", result},
-                                                     {"credential", h.credential},
-                                                     {"duration_ms", seconds * 1000.0}});
+    json log_fields = {{"event", "mcp_tool_call"}, {"tool", name}, {"result", result},
+                       {"credential", h.credential}, {"duration_ms", seconds * 1000.0}};
+    if (outcome.sources >= 0) log_fields["sources"] = outcome.sources; // ask_docs: без текста вопроса и ответа
+    applog::info("tool " + name + " -> " + result, log_fields);
 
     if (!invalid.empty()) return error_reply(id, kInvalidParams, invalid);
     return result_reply(id, {{"content", json::array({{{"type", "text"}, {"text", outcome.text}}})},
@@ -161,7 +160,7 @@ Reply handle(const std::string& body, const Handlers& h) {
         return r;
     }
     if (method == "ping") return result_reply(id, json::object());
-    if (method == "tools/list") return result_reply(id, tools::list());
+    if (method == "tools/list") return result_reply(id, tools::list(h.docs_enabled));
     if (method == "tools/call") return call_tool(id, params, h);
     return error_reply(id, kMethodNotFound, "Method not found: " + method);
 }

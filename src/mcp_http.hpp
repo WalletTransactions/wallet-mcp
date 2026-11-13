@@ -12,6 +12,7 @@
 #include "access.hpp"
 #include "clients/reports_client.hpp"
 #include "directory.hpp"
+#include "docs_client.hpp"
 #include "httplib.h"
 #include "nlohmann/json.hpp"
 
@@ -30,6 +31,10 @@ struct Deps {
     // Ключи google-auth для JWT (mcpaccess::lazy_jwks). Пусто — приём JWT
     // выключен (AUTH_EXCHANGE_SECRET не задан): токен не `wmcp_…` — 401.
     mcpaccess::KeyLookup jwt_keys;
+    // Справка (change docs-tool): оба пустые — WALLET_DOCS_URL не задан,
+    // инструмента ask_docs нет. docs_tokens — кеш с audience wallet-docs.
+    docsclient::DocsApi* docs = nullptr;
+    mcpaccess::TokenCache* docs_tokens = nullptr;
 };
 
 // Поля журнала о текущем запросе к /api/mcp/ после аутентификации:

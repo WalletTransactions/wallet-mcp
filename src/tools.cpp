@@ -19,6 +19,9 @@ namespace tools {
 
 const char* const kReportsUnavailable = "Отчёты временно недоступны, попробуйте позже.";
 const char* const kNoWallets = "Кошельков пока нет — заведите их в приложении.";
+const char* const kDocsUnavailable = "Справка временно недоступна, попробуйте позже.";
+const char* const kDocsForbidden = "Справка недоступна для этого токена.";
+const char* const kDocsEmptyQuestion = "Вопрос пустой.";
 
 const char* to_string(Outcome::Kind k) {
     switch (k) {
@@ -43,6 +46,7 @@ constexpr int kMaxTextVariants = 10; // повторов q у /operations
 constexpr int kMaxCursorChars = 80;  // «дата|uuid»: 26 + 1 + 36 с запасом
 constexpr int kDefaultLimit = 20;
 constexpr std::size_t kCommentBytes = 120;
+constexpr int kMaxQuestionChars = 1000; // как maxLength в openapi.yaml wallet-docs
 
 json date_prop(const std::string& description) {
     return {{"type", "string"}, {"format", "date"}, {"description", description}};
@@ -168,6 +172,15 @@ json build_registry() {
                      {"description", "next_cursor из прошлого ответа — следующая страница. Передавай без "
                                      "изменений, остальные аргументы — те же"}}},
          {"currency", currency_prop()}}));
+    tools.push_back(tool(
+        "ask_docs",
+        "Отвечает на вопросы «как работает система, приложение или MCP» по описанию системы: как считается "
+        "баланс, что делает переоценка, как выпустить MCP-токен. Возвращает answer и sources (разделы описания). "
+        "Цифры по тратам, балансам и операциям не отдаёт — для них есть другие инструменты.",
+        {{"question", {{"type", "string"},
+                       {"maxLength", kMaxQuestionChars},
+                       {"description", "Вопрос о том, как устроена система или приложение, до 1000 символов"}}}},
+        {"question"}));
     return {{"tools", tools}};
 }
 
@@ -1053,11 +1066,85 @@ ojson search_operations(Call& c, const json& args, const Context& ctx) {
     return out;
 }
 
+Outcome docs_failure(Outcome::Kind kind, std::string text) {
+    Outcome out;
+    out.kind = kind;
+    out.text = std::move(text);
+    return out;
+}
+
+// ask_docs (спека docs-lookup): JWT для wallet-docs из отдельного кеша, один
+// вопрос, ответ как есть. Любой отказ — результат инструмента (isError), а не
+// HTTP-ошибка: инструменты данных в той же сессии продолжают работать (D7).
+Outcome ask_docs(const json& arguments, DocsContext& docs) {
+    const std::string question = trim(arguments["question"].get<std::string>());
+    if (question.empty()) return docs_failure(Outcome::Kind::ToolError, kDocsEmptyQuestion);
+
+    mcpaccess::Session session = docs.tokens.get(docs.presented);
+    auto exchange_failure = [](const mcpaccess::Session& s) {
+        return s.result == auth::Exchange::Result::Invalid
+                   ? docs_failure(Outcome::Kind::ToolError, kDocsForbidden)
+                   : docs_failure(Outcome::Kind::Unavailable, kDocsUnavailable);
+    };
+    if (session.result != auth::Exchange::Result::Ok) return exchange_failure(session);
+
+    docsclient::Response r = docs.api.ask(question, session.jwt);
+    if (r.status == 401) { // ключ google-auth сменился: один повтор с новым JWT
+        session = docs.tokens.refresh(docs.presented);
+        if (session.result != auth::Exchange::Result::Ok) return exchange_failure(session);
+        r = docs.api.ask(question, session.jwt);
+    }
+
+    switch (r.status) {
+    case 200: {
+        if (!r.body.is_object() || !r.body.contains("answer") || !r.body["answer"].is_string() ||
+            !r.body.contains("sources") || !r.body["sources"].is_array()) {
+            applog::warn("ответ wallet-docs не по контракту", {{"event", "mcp_docs_unavailable"}});
+            return docs_failure(Outcome::Kind::Unavailable, kDocsUnavailable);
+        }
+        Outcome out;
+        out.kind = Outcome::Kind::Ok;
+        out.text = json{{"answer", r.body["answer"]}, {"sources", r.body["sources"]}}.dump();
+        out.sources = static_cast<int>(r.body["sources"].size());
+        return out;
+    }
+    case 400: {
+        std::string reason = r.body.is_object() && r.body.contains("error") && r.body["error"].is_string()
+                                 ? r.body["error"].get<std::string>()
+                                 : "неверный вопрос";
+        return docs_failure(Outcome::Kind::ToolError, "Вопрос не принят: " + reason + ".");
+    }
+    case 401:
+    case 403:
+        return docs_failure(Outcome::Kind::ToolError, kDocsForbidden);
+    case 429:
+        return docs_failure(Outcome::Kind::Unavailable,
+                            "Слишком много вопросов, повторите через " +
+                                std::to_string(r.retry_after > 0 ? r.retry_after : 60) + " с.");
+    default: // 503, прочие 5xx, сеть и таймаут (status 0)
+        if (!r.error.empty()) applog::warn(r.error, {{"event", "mcp_docs_unavailable"}});
+        return docs_failure(Outcome::Kind::Unavailable, kDocsUnavailable);
+    }
+}
+
 } // namespace
 
-const json& list() { return registry(); }
+json list(bool docs_enabled) {
+    json out = registry();
+    if (!docs_enabled) {
+        json kept = json::array();
+        for (const auto& t : out["tools"]) {
+            if (t["name"] != "ask_docs") kept.push_back(t);
+        }
+        out["tools"] = std::move(kept);
+    }
+    return out;
+}
 
-bool exists(const std::string& name) { return schema_of(name) != nullptr; }
+bool exists(const std::string& name, bool docs_enabled) {
+    if (name == "ask_docs" && !docs_enabled) return false;
+    return schema_of(name) != nullptr;
+}
 
 std::string without_parenthetical(const std::string& name) {
     std::size_t end = name.find_last_not_of(" \t");
@@ -1088,6 +1175,11 @@ void validate(const std::string& name, const json& arguments) {
 }
 
 Outcome call(const std::string& name, const json& arguments, Context& ctx) {
+    if (name == "ask_docs") {
+        if (ctx.docs == nullptr) throw InvalidParams("Неизвестный инструмент: " + name);
+        validate(name, arguments);
+        return ask_docs(arguments, *ctx.docs);
+    }
     validate(name, arguments);
     Call c(ctx);
     Outcome out;

@@ -4,6 +4,7 @@ add_executable(wallet_mcp_tests
     test_auth_client.cpp
     test_dates.cpp
     test_decimal.cpp
+    test_docs.cpp
     test_mcp.cpp
     test_mcp_http.cpp
     test_tools.cpp

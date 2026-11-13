@@ -34,10 +34,12 @@ const char* to_string(Exchange::Result r);
 class AuthApi {
 public:
     virtual ~AuthApi() = default;
-    // wmcp_… → JWT для wallet-report.
-    virtual Exchange exchange(const std::string& mcp_token) = 0;
-    // JWT для wallet-mcp → JWT для wallet-report (RFC 8693).
-    virtual Exchange exchange_jwt(const std::string& subject_jwt) = 0;
+    // wmcp_… → JWT для адресата audience (пусто — wallet-report, прежнее
+    // поведение: поле в запрос не добавляется; change docs-tool, D2/D3).
+    virtual Exchange exchange(const std::string& mcp_token, const std::string& audience = "") = 0;
+    // JWT для wallet-mcp → JWT для адресата audience (RFC 8693; пусто —
+    // wallet-report).
+    virtual Exchange exchange_jwt(const std::string& subject_jwt, const std::string& audience = "") = 0;
 };
 
 // Разбор ответа /internal/mcp/token: 200 с access_token и expires_in > 0 —

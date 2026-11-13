@@ -103,7 +103,11 @@ public:
     // Запас до exp: JWT, которому осталось меньше, меняется заново.
     static constexpr std::chrono::seconds kExpiryMargin{30};
 
-    TokenCache(auth::AuthApi& api, Clock clock = steady_clock(), WallClock wall = wall_clock());
+    // audience — адресат JWT: пусто — wallet-report; "wallet-docs" — отдельный
+    // экземпляр кеша для справки (change docs-tool, D2): записи двух кешей не
+    // пересекаются, метрики обмена docs — свои.
+    TokenCache(auth::AuthApi& api, Clock clock = steady_clock(), WallClock wall = wall_clock(),
+               std::string audience = "");
 
     // Попадание — JWT из кеша (mcp_token_cache_total{result="hit"}); иначе
     // обмен в google-auth (miss + mcp_token_exchange_total{result,kind}).
@@ -130,6 +134,7 @@ private:
     auth::AuthApi& api_;
     Clock clock_;
     WallClock wall_;
+    std::string audience_;
     mutable std::mutex mu_;
     std::unordered_map<std::string, Entry> entries_;
     unsigned calls_ = 0;

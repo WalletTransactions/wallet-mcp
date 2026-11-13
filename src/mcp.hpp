@@ -38,6 +38,8 @@ struct Handlers {
     // Вид учётных данных запроса ("pat"/"jwt") — лейбл mcp_tool_calls_total
     // и поле журнала (change add-jwt-access, D5).
     std::string credential = "pat";
+    // Задан WALLET_DOCS_URL: ask_docs есть в tools/list и tools/call (docs-tool).
+    bool docs_enabled = false;
     // tools/call: имя уже проверено на существование; InvalidParams из
     // вызова становится -32602, остальные исключения идут наружу.
     std::function<tools::Outcome(const std::string& name, const nlohmann::json& arguments)> call_tool;
