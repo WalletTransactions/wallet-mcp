@@ -63,6 +63,7 @@ add_library(wallet_mcp_core STATIC
     src/dates.cpp
     src/decimal.cpp
     src/directory.cpp
+    src/docs_client.cpp
     src/mcp.cpp
     src/mcp_http.cpp
     src/metrics2.cpp

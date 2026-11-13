@@ -26,6 +26,7 @@ struct FakeAuth : auth::AuthApi {
     int calls = 0;
     int jwt_calls = 0;
     std::vector<std::string> tokens;
+    std::vector<std::string> audiences; // audience каждого обмена ("" — не задан)
     int counter = 0; // номер выданного JWT — видно, что обмен был новым
 
     FakeAuth() { ok(); }
@@ -51,18 +52,20 @@ struct FakeAuth : auth::AuthApi {
         next.invalid_client = true;
         next.error = "invalid_client";
     }
-    auth::Exchange exchange(const std::string& t) override {
+    auth::Exchange exchange(const std::string& t, const std::string& audience) override {
         ++calls;
         tokens.push_back(t);
+        audiences.push_back(audience);
         auth::Exchange e = next;
         e.invalid_client = false; // у /internal/mcp/token такого ответа нет
         if (e.result == auth::Exchange::Result::Ok) e.access_token = "jwt-" + std::to_string(++counter);
         return e;
     }
-    auth::Exchange exchange_jwt(const std::string& t) override {
+    auth::Exchange exchange_jwt(const std::string& t, const std::string& audience) override {
         ++calls;
         ++jwt_calls;
         tokens.push_back(t);
+        audiences.push_back(audience);
         auth::Exchange e = next;
         e.user_id.clear(); // в ответе RFC 8693 user_id нет
         if (e.result == auth::Exchange::Result::Ok) e.access_token = "jwt-" + std::to_string(++counter);

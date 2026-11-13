@@ -1,5 +1,7 @@
 #include "mcp_http.hpp"
 
+#include <optional>
+
 #include "dates.hpp"
 #include "mcp.hpp"
 #include "nlohmann/json.hpp"
@@ -92,14 +94,18 @@ void handle_post(const httplib::Request& req, httplib::Response& res, Deps& deps
         return;
     }
 
+    const bool docs_enabled = deps.docs != nullptr && deps.docs_tokens != nullptr;
+    std::optional<tools::DocsContext> docs;
+    if (docs_enabled) docs.emplace(tools::DocsContext{*deps.docs, *deps.docs_tokens, presented});
     mcpaccess::UserReports reports(deps.reports, deps.tokens, std::move(presented), session);
-    tools::Context ctx{reports, deps.directory, dates::today(deps.now())};
+    tools::Context ctx{reports, deps.directory, dates::today(deps.now()), docs ? &*docs : nullptr};
     mcp::Handlers h;
     h.today = ctx.today;
     h.tz_name = deps.tz_name;
     h.server_version = deps.server_version;
     h.new_session_id = [] { return uuidgen::v4(); };
     h.credential = credential;
+    h.docs_enabled = docs_enabled;
     h.call_tool = [&ctx](const std::string& name, const json& arguments) { return tools::call(name, arguments, ctx); };
 
     mcp::Reply reply;

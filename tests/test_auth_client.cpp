@@ -213,3 +213,18 @@ TEST(auth_client_exchange_jwt_without_secret_does_not_call) {
     CHECK(e.result == auth::Exchange::Result::Unavailable);
     CHECK_EQ(ga.exchange_calls.load(), 0);
 }
+
+// --- audience (change docs-tool, D2/D3) ---
+
+TEST(auth_client_audience_wallet_docs) {
+    FakeGoogleAuth ga;
+    auto api = auth::make_http_api(ga.url(), 3000, 5000, "s3cret");
+    // Без audience тело прежнее: только token.
+    api->exchange(fakes::token());
+    CHECK(ga.last_body.find("audience") == std::string::npos);
+    api->exchange(fakes::token(), "wallet-docs");
+    CHECK(ga.last_body.find("\"audience\":\"wallet-docs\"") != std::string::npos);
+    api->exchange_jwt("a.b.c", "wallet-docs");
+    auto it = ga.last_form.find("audience");
+    CHECK(it != ga.last_form.end() && it->second == "wallet-docs");
+}

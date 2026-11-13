@@ -61,15 +61,16 @@ public:
         : base_url_(std::move(base_url)), connect_ms_(connect_timeout_ms), read_ms_(read_timeout_ms),
           exchange_secret_(std::move(exchange_secret)) {}
 
-    Exchange exchange(const std::string& mcp_token) override {
+    Exchange exchange(const std::string& mcp_token, const std::string& audience) override {
         auto client = make_client();
-        auto res = client->Post("/internal/mcp/token", trace_headers(), json{{"token", mcp_token}}.dump(),
-                                "application/json");
+        json body{{"token", mcp_token}};
+        if (!audience.empty()) body["audience"] = audience;
+        auto res = client->Post("/internal/mcp/token", trace_headers(), body.dump(), "application/json");
         if (!res) return network_error(res.error());
         return parse_mcp_token_response(res->status, res->body);
     }
 
-    Exchange exchange_jwt(const std::string& subject_jwt) override {
+    Exchange exchange_jwt(const std::string& subject_jwt, const std::string& audience) override {
         if (exchange_secret_.empty()) {
             Exchange out;
             out.error = "AUTH_EXCHANGE_SECRET не задан";
@@ -81,7 +82,7 @@ public:
         httplib::Params form{{"grant_type", kGrantTokenExchange},
                              {"subject_token", subject_jwt},
                              {"subject_token_type", kTokenTypeAccess},
-                             {"audience", kAudienceReport}};
+                             {"audience", audience.empty() ? kAudienceReport : audience}};
         auto res = client->Post("/internal/token/exchange", headers, form);
         if (!res) return network_error(res.error());
         return parse_token_exchange_response(res->status, res->body);
