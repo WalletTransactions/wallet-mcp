@@ -4,7 +4,7 @@
 
 - [ ] 1.1 google-auth, change `docs-mcp-audience`: необязательный `audience` в `POST /internal/mcp/token` (белый список `wallet-report` | `wallet-docs`, по умолчанию прежний), пара «actor `wallet-mcp` → `wallet-docs`, scope `docs:ask`» в таблице политики обмена; JWT по `wmcp_…` с `platform` = `mcp`, JWT обмена наследует `platform` исходной сессии, `role` нет ни у одного; `openapi.yaml`, README. Проверка: юнит-тесты на состав claim'ов обоих JWT; запрос без `audience` отдаёт прежний JWT; чужой `audience` — `400`. Оформлено как change `docs-mcp-audience`.
 - [ ] 1.2 wallet-docs, change `mcp-scope`: `scope_for` для платформы `mcp` — `wallet-web`, `wallet-web-eqdefault`, `wallet-mcp`, виды только `spec`; тест строки таблицы и токена `mcp` без `role` (админом не становится). Оформлено как change `mcp-scope`. Проверка: `ctest`; вопрос про устройство гейтвея токеном `mcp` — отказ без источников `wallet-gateway`.
-- [ ] 1.3 wallet-infra: убедиться, что `wallet-mcp` есть в списке репозиториев `docs-index.sh` и заливается в индекс. Проверка: после заливки в `doc_chunks` есть чанки `repo = wallet-mcp`, `kind = spec`.
+- [x] 1.3 wallet-infra: убедиться, что `wallet-mcp` есть в списке репозиториев `docs-index.sh` и заливается в индекс. Проверка: после заливки в `doc_chunks` есть чанки `repo = wallet-mcp`, `kind = spec`.
 
 ## 2. Клиент wallet-docs и JWT
 
