@@ -31,6 +31,9 @@ bool operator==(const Date& a, const Date& b);
 
 Date add_days(const Date& d, int days);
 
+// Сколько дней от from до to (to позже — положительное); обе даты уже проверены parse().
+int days_between(const Date& from, const Date& to);
+
 // 1 — понедельник … 7 — воскресенье.
 int iso_weekday(const Date& d);
 // «понедельник» … «воскресенье».

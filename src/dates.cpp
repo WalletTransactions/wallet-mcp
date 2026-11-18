@@ -69,6 +69,10 @@ bool operator==(const Date& a, const Date& b) {
 
 Date add_days(const Date& d, int days) { return civil_from_days(days_from_civil(d.year, d.month, d.day) + days); }
 
+int days_between(const Date& from, const Date& to) {
+    return static_cast<int>(days_from_civil(to.year, to.month, to.day) - days_from_civil(from.year, from.month, from.day));
+}
+
 int iso_weekday(const Date& d) {
     long z = days_from_civil(d.year, d.month, d.day);
     // 1970-01-01 — четверг (4).
