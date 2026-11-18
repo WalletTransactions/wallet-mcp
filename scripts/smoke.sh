@@ -63,6 +63,9 @@ call 5 spending_by_category "{\"from\":\"$from\",\"to\":\"$to\"}"
 call 6 income_expense_by_month "{\"from\":\"$from\",\"to\":\"$to\"}"
 call 7 balance '{}'
 call 8 search_operations "{\"from\":\"$from\",\"to\":\"$to\",\"limit\":5}"
+# improve-search-summary: исключение по тексту и сводка (нужен wallet-report с summary).
+call 10 search_operations "{\"text\":[\"стриж\",\"barber\"],\"exclude_text\":[\"машинк\"],\"limit\":5}"
+check "search_operations: summary с датами и категориями" '(.result.content[0].text | fromjson | .summary | has("by_category"))'
 
 rpc '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"list_categories","arguments":{"as_user_id":"00000000-0000-4000-8000-000000000000"}}}'
 check "as_user_id → -32602" '.error.code == -32602'

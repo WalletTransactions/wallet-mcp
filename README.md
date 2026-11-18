@@ -98,7 +98,7 @@ HTTP `200`: `-32700` (не JSON), `-32600` (не JSON-RPC 2.0, батч), `-3260
 | `spending_by_category_by_month` | `from`, `to`, `categories?`, `exclude_categories?`, `months_of_year?`, `currency?` | `rows[{category, amount, count, avg_per_month, by_month?}]`, `months_of_year?`, `total`, `count`, `months`, `avg_per_month`, `incomplete` | `expense-by-category-by-month` ×1 |
 | `income_expense_by_month` | `from`, `to`, `currency?` | `months[{month, income, expense}]`, `incomplete` | `income-expense-by-month` |
 | `balance` | `wallet?`, `date?`, `currency?` | как `list_wallets` на конец дня `date` | `balance?date=<date+1>` |
-| `search_operations` | `from?`, `to?`, `text?` (массив вариантов), `categories?`, `exclude_categories?`, `wallets?`, `kind?`, `limit?`, `cursor?`, `currency?` | `operations[{date, kind, amount, currency, category, wallet \| from, to, comment}]`, `has_more`, `next_cursor?`, `total`, `count`, `incomplete`, `kind` | `operations` с `category_uuid`/`exclude_category_uuid`/`wallet_uuid`/`kind`/`q` (повторённый)/`limit`/`cursor_date`+`cursor_uuid` |
+| `search_operations` | `from?`, `to?`, `text?` (массив вариантов), `exclude_text?` (массив вариантов), `categories?`, `exclude_categories?`, `wallets?`, `kind?`, `limit?`, `cursor?`, `currency?` | `operations[{date, kind, amount, currency, category, wallet \| from, to, comment}]`, `has_more`, `next_cursor?`, `total`, `count`, `incomplete`, `kind`, `summary{first_date?, last_date?, avg_interval_days?, by_category[{category, count, total}]}`, `other_matches?[{category, count, total}]` | `operations` с `category_uuid`/`exclude_category_uuid`/`wallet_uuid`/`kind`/`q` и `exclude_q` (повторённые)/`summary=true`/`limit`/`cursor_date`+`cursor_uuid` |
 | `ask_docs` | `question` (до 1000 символов) | `answer`, `sources[{repo, capability, heading}]` — как есть от wallet-docs; данных кошелька не читает. Только при заданном `WALLET_DOCS_URL` | `POST {WALLET_DOCS_URL}/api/docs/ask` (wallet-docs) |
 
 Детали:
@@ -163,6 +163,19 @@ HTTP `200`: `-32700` (не JSON), `-32600` (не JSON-RPC 2.0, батч), `-3260
   отвечает «Отчёты временно недоступны».
   `text` — массив до 10 вариантов (каждый до 100 символов): подходит
   комментарий с любым из них («стриж», «парикмах», «barber» одним вызовом).
+  `exclude_text` — тот же формат, обратный смысл: операция, где комментарий
+  содержит любой из вариантов, не попадает ни в список, ни в `total`,
+  `count` и `summary` («стриж» без «машинк»); пустой комментарий не исключается.
+  `summary` при любом фильтре считает wallet-report по всем подходящим
+  операциям периода: `first_date`, `last_date`, `by_category` (до 20 строк по
+  убыванию суммы, при обрезании `by_category_truncated: true`; переводы и
+  долги без категории не показываются) и `avg_interval_days` —
+  `(last_date − first_date) / (count − 1)` с одним знаком, только при
+  `count` ≥ 2 (деление двух значений ответа, как `avg_per_month`).
+  `other_matches` — при `text` + `categories`: категории вне `categories`, где
+  комментарий тоже совпал с `text` (пустой массив — «проверено, нет»).
+  `exclude_text` требует wallet-report с `summary` (при его отсутствии в
+  ответе — «Отчёты временно недоступны», а не неотфильтрованная сумма).
   Варианты уходят повторённым `q`; пустые после trim и повторы
   отбрасываются; операция под двумя вариантами в `total`/`count` входит
   один раз — это считает SQL (wallet-api 000032), а не сервис.

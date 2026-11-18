@@ -142,8 +142,15 @@ json build_registry() {
         "них, поэтому синонимы и переводы передавай одним вызовом, например [\"стриж\", \"парикмах\", "
         "\"barber\", \"haircut\"]. Возвращает до limit последних операций; has_more: true — есть более ранние, "
         "тогда в ответе next_cursor: передай его в cursor с теми же остальными аргументами, чтобы получить "
-        "следующую страницу. total — сумма ВСЕХ подходящих операций периода, "
-        "посчитанная сервером, и count — их число, одни и те же на любой странице. kind по умолчанию \"expense\": total — сколько потрачено, "
+        "следующую страницу. exclude_text — обратный фильтр: операции, где комментарий содержит ЛЮБОЙ из "
+        "вариантов, не попадают ни в список, ни в total, ни в summary; им отсекай ложные срабатывания, "
+        "например text [\"стриж\"] и exclude_text [\"машинк\"]. total — сумма ВСЕХ подходящих операций периода, "
+        "посчитанная сервером, и count — их число, одни и те же на любой странице. summary — тоже по всем "
+        "подходящим операциям, а не по странице: first_date и last_date (первая и последняя операция), "
+        "avg_interval_days (среднее число дней между соседними, при count от 2) и by_category — категории с "
+        "count и total. other_matches (при text и categories) — категории ВНЕ categories, где комментарий тоже "
+        "совпал с text; если он не пуст, скажи пользователю, что такие операции есть в других категориях. "
+        "kind по умолчанию \"expense\": total — сколько потрачено, "
         "неотрицательное. kind \"income\" и \"transfer\" — сумма доходов или переводов. kind \"any\" — все "
         "типы, тогда total — сальдо: доходы минус расходы, прямые переводы между кошельками в него не входят; "
         "при \"any\" без других фильтров total нет. Период необязателен: без to — по сегодня, без from — с "
@@ -157,6 +164,13 @@ json build_registry() {
                    {"maxItems", kMaxTextVariants},
                    {"description", "Варианты подстроки комментария (до 10, каждый до 100 символов), без учёта "
                                    "регистра; подходит комментарий с любым из них"}}},
+         {"exclude_text", {{"type", "array"},
+                           {"items", {{"type", "string"}, {"maxLength", kMaxTextChars}}},
+                           {"minItems", 1},
+                           {"maxItems", kMaxTextVariants},
+                           {"description", "Исключить операции: варианты подстроки комментария (до 10, каждый до "
+                                           "100 символов), без учёта регистра; операция, где комментарий "
+                                           "содержит любой из них, не попадает в ответ"}}},
          {"categories", names_prop("Имена категорий")},
          {"exclude_categories", exclude},
          {"wallets", names_prop("Имена кошельков")},
@@ -969,6 +983,69 @@ Period search_period(const json& args, const dates::Date& today, bool& from_give
     return p;
 }
 
+// Варианты подстроки из массива аргумента (text, exclude_text): trim, пустые и
+// повторы отбрасываются. Форма и размер массива уже проверены схемой (-32602).
+std::vector<std::string> text_variants(const json& args, const char* key) {
+    std::vector<std::string> out;
+    if (!has(args, key)) return out;
+    for (const auto& v : args[key]) {
+        std::string t = trim(v.get<std::string>());
+        if (!t.empty() && std::find(out.begin(), out.end(), t) == out.end()) out.push_back(t);
+    }
+    return out;
+}
+
+// Строка {category, count, total} из summary.by_category/other_matches wallet-report.
+ojson category_total_row(const json& r, int precision) {
+    return {{"category", r.value("category_name", "")},
+            {"count", r.value("count", 0)},
+            {"total", amount(r.value("total_eq", json("0")), precision)}};
+}
+
+constexpr std::size_t kMaxSummaryCategories = 20;
+
+// Среднее число дней между соседними операциями: (last − first) / (count − 1),
+// один знак после запятой, половина вверх. Деление двух значений из ответа
+// wallet-report — как avg_per_month: суммы по строкам сервис не считает.
+std::string avg_interval_days(const dates::Date& first, const dates::Date& last, long long count) {
+    const long long den = count - 1;
+    const long long num = static_cast<long long>(dates::days_between(first, last)) * 10;
+    const long long tenths = (2 * num + den) / (2 * den);
+    return std::to_string(tenths / 10) + "." + std::to_string(tenths % 10);
+}
+
+// summary ответа: даты и разбивка по категориям — по ВСЕМ подходящим операциям
+// периода (считает wallet-report), не по странице. Прямые переводы и долги (категории
+// нет) в by_category не показываются, но входят в count и total.
+ojson search_summary(const json& s, long long count, int precision) {
+    ojson out = ojson::object();
+    auto date_of = [&](const char* key) -> std::optional<dates::Date> {
+        if (!s.contains(key) || !s[key].is_string()) return std::nullopt;
+        return dates::parse(s[key].get<std::string>());
+    };
+    auto first = date_of("first_date");
+    auto last = date_of("last_date");
+    if (first) out["first_date"] = dates::to_string(*first);
+    if (last) out["last_date"] = dates::to_string(*last);
+    if (first && last && count >= 2) out["avg_interval_days"] = avg_interval_days(*first, *last, count);
+
+    ojson cats = ojson::array();
+    bool truncated = false;
+    if (s.contains("by_category") && s["by_category"].is_array()) {
+        for (const auto& r : s["by_category"]) {
+            if (!r.is_object() || r.value("category_uuid", json(nullptr)).is_null()) continue;
+            if (cats.size() >= kMaxSummaryCategories) {
+                truncated = true;
+                break;
+            }
+            cats.push_back(category_total_row(r, precision));
+        }
+    }
+    out["by_category"] = std::move(cats);
+    if (truncated) out["by_category_truncated"] = true;
+    return out;
+}
+
 ojson search_operations(Call& c, const json& args, const Context& ctx) {
     bool from_given = false;
     Period p = search_period(args, ctx.today, from_given);
@@ -977,13 +1054,9 @@ ojson search_operations(Call& c, const json& args, const Context& ctx) {
     // Варианты текста — повторённым q у wallet-report: ИЛИ и итог по
     // объединению считает SQL (операция под двумя вариантами — один раз).
     // Пустые после trim и повторы отбрасываются.
-    std::vector<std::string> qs;
-    if (has(args, "text")) {
-        for (const auto& v : args["text"]) {
-            std::string t = trim(v.get<std::string>());
-            if (!t.empty() && std::find(qs.begin(), qs.end(), t) == qs.end()) qs.push_back(t);
-        }
-    }
+    std::vector<std::string> qs = text_variants(args, "text");
+    // exclude_text — те же правила разбора, уходит повторённым exclude_q.
+    std::vector<std::string> exclude_qs = text_variants(args, "exclude_text");
     Cursor cursor = cursor_arg(args);
     int limit = has(args, "limit") ? static_cast<int>(args["limit"].get<double>()) : kDefaultLimit;
     Eq eq = c.currency(args);
@@ -1005,17 +1078,26 @@ ojson search_operations(Call& c, const json& args, const Context& ctx) {
     if (!wallets.empty()) params.emplace_back("wallet_uuid", uuids(wallets));
     if (kind != "any") params.emplace_back("kind", kind);
     for (const auto& q : qs) params.emplace_back("q", q);
+    for (const auto& q : exclude_qs) params.emplace_back("exclude_q", q);
     if (!cursor.date.empty()) {
         params.emplace_back("cursor_date", cursor.date);
         params.emplace_back("cursor_uuid", cursor.uuid);
     }
-    bool filtered = !cats.empty() || !excluded.empty() || !wallets.empty() || kind != "any" || !qs.empty();
+    bool filtered = !cats.empty() || !excluded.empty() || !wallets.empty() || kind != "any" || !qs.empty() ||
+                    !exclude_qs.empty();
+    // Сводка (даты, разбивка по категориям, совпадения вне категорий) — только при
+    // фильтре, там же, где итог: без фильтра нет «подходящих» операций.
+    if (filtered) params.emplace_back("summary", "true");
 
     json body = c.fetch(query("/api/reports/operations", params));
     if (!body.contains("operations") || !body["operations"].is_array()) throw ReportsDown();
     // Итог при фильтре — обязательная часть ответа wallet-report: без него
     // фильтры не применились бы, и показанные строки были бы не те.
     if (filtered && !body.contains("total_eq")) throw ReportsDown();
+    // exclude_text старый wallet-report молча проигнорировал бы (неизвестный
+    // параметр), и итог оказался бы неотфильтрованным. Новый при exclude_q и
+    // summary=true всегда отдаёт summary — по его отсутствию это и видно (design D5).
+    if (!exclude_qs.empty() && !(body.contains("summary") && body["summary"].is_object())) throw ReportsDown();
 
     ojson ops = ojson::array();
     for (const auto& o : body["operations"]) {
@@ -1062,6 +1144,17 @@ ojson search_operations(Call& c, const json& args, const Context& ctx) {
         out["total"] = amount(body["total_eq"], eq.precision);
         out["count"] = body.value("total_count", 0);
         out["incomplete"] = body.value("total_incomplete", false);
+        if (body.contains("summary") && body["summary"].is_object()) {
+            out["summary"] = search_summary(body["summary"], body.value("total_count", 0), eq.precision);
+        }
+        // other_matches — только при text + categories (их же условие у wallet-report).
+        if (!qs.empty() && !cats.empty() && body.contains("other_matches") && body["other_matches"].is_array()) {
+            ojson other = ojson::array();
+            for (const auto& r : body["other_matches"]) {
+                if (r.is_object()) other.push_back(category_total_row(r, eq.precision));
+            }
+            out["other_matches"] = std::move(other);
+        }
     }
     return out;
 }

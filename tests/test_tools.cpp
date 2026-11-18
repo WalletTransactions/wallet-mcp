@@ -397,6 +397,151 @@ TEST(tools_search_without_total_from_report_is_unavailable) {
     CHECK_EQ(o.text, tools::kReportsUnavailable);
 }
 
+// --- change improve-search-summary: exclude_text, summary, other_matches ---
+
+namespace {
+
+// Ответ /operations с итогом и summary: по умолчанию «три стрижки» (3 операции).
+json search_body(json summary, int count = 3, json extra = json::object()) {
+    json b = {{"operations", json::array()}, {"incomplete", false}, {"has_more", false},
+              {"eq_currency_uuid", "c-RUB"}, {"total_eq", "48"}, {"total_incomplete", false},
+              {"total_count", count}, {"summary", std::move(summary)}};
+    for (auto it = extra.begin(); it != extra.end(); ++it) b[it.key()] = it.value();
+    return b;
+}
+
+json cat_row(const char* uuid, const char* name, const char* total, int count) {
+    return {{"category_uuid", uuid}, {"category_name", name}, {"total_eq", total}, {"count", count}};
+}
+
+} // namespace
+
+TEST(tools_search_summary_dates_interval_and_categories) {
+    Env e;
+    json by_category = json::array({cat_row("c-ride", "Проезд", "33", 2),
+                                    {{"category_uuid", nullptr}, {"category_name", ""}, {"total_eq", "0"}, {"count", 1}}});
+    e.reports.set("/api/reports/operations",
+                  search_body({{"first_date", "2026-03-04"}, {"last_date", "2026-11-06"}, {"by_category", by_category}}));
+    json r = e.ok("search_operations", with(kSeptember, {{"text", json::array({"стриж"})}}));
+    CHECK(contains(e.reports.last("/api/reports/operations"), "summary=true"));
+    const json& s = r["summary"];
+    CHECK_EQ(s["first_date"], "2026-03-04");
+    CHECK_EQ(s["last_date"], "2026-11-06");
+    CHECK_EQ(s["avg_interval_days"], "123.5"); // 247 дня / 2
+    // Строка без категории (перевод) в разбивке не показывается.
+    CHECK_EQ(s["by_category"].size(), 1u);
+    CHECK_EQ(s["by_category"][0], (json{{"category", "Проезд"}, {"count", 2}, {"total", "33.00"}}));
+    CHECK(!s.contains("by_category_truncated"));
+}
+
+TEST(tools_search_summary_single_and_empty) {
+    Env e;
+    e.reports.set("/api/reports/operations",
+                  search_body({{"first_date", "2026-05-01"}, {"last_date", "2026-05-01"},
+                               {"by_category", json::array({cat_row("c-ride", "Проезд", "7", 1)})}}, 1));
+    json one = e.ok("search_operations", with(kSeptember, {{"text", json::array({"такси"})}}));
+    CHECK_EQ(one["summary"]["first_date"], "2026-05-01");
+    CHECK_EQ(one["summary"]["last_date"], "2026-05-01");
+    CHECK(!one["summary"].contains("avg_interval_days"));
+
+    e.reports.set("/api/reports/operations",
+                  search_body({{"first_date", nullptr}, {"last_date", nullptr}, {"by_category", json::array()}}, 0));
+    json none = e.ok("search_operations", with(kSeptember, {{"text", json::array({"zzz"})}}));
+    CHECK(!none["summary"].contains("first_date"));
+    CHECK(!none["summary"].contains("last_date"));
+    CHECK(!none["summary"].contains("avg_interval_days"));
+    CHECK_EQ(none["summary"]["by_category"].size(), 0u);
+}
+
+TEST(tools_search_summary_truncates_categories_to_twenty) {
+    Env e;
+    json many = json::array();
+    for (int i = 0; i < 22; ++i) many.push_back(cat_row("c-ride", "Проезд", "1", 1));
+    e.reports.set("/api/reports/operations",
+                  search_body({{"first_date", "2026-01-01"}, {"last_date", "2026-02-01"}, {"by_category", many}}, 22));
+    json r = e.ok("search_operations", with(kSeptember, {{"text", json::array({"x"})}}));
+    CHECK_EQ(r["summary"]["by_category"].size(), 20u);
+    CHECK_EQ(r["summary"]["by_category_truncated"], true);
+}
+
+TEST(tools_search_old_report_without_summary_answers_as_before) {
+    Env e;
+    e.reports.set("/api/reports/operations",
+                  {{"operations", json::array()}, {"incomplete", false}, {"has_more", false},
+                   {"eq_currency_uuid", "c-RUB"}, {"total_eq", "10"}, {"total_incomplete", false}, {"total_count", 1}});
+    json r = e.ok("search_operations", with(kSeptember, {{"text", json::array({"такси"})}}));
+    CHECK_EQ(r["total"], "10.00");
+    CHECK(!r.contains("summary"));
+    CHECK(!r.contains("other_matches"));
+}
+
+TEST(tools_search_exclude_text_goes_as_repeated_exclude_q) {
+    Env e;
+    e.reports.set("/api/reports/operations",
+                  search_body({{"first_date", "2026-03-04"}, {"last_date", "2026-11-06"}, {"by_category", json::array()}}));
+    e.ok("search_operations", with(kSeptember, {{"text", json::array({"стриж"})},
+                                                 {"exclude_text", json::array({"машинк", " ", "машинк", "ножниц"})}}));
+    std::string q = e.reports.last("/api/reports/operations");
+    CHECK(contains(q, "q=%D1%81%D1%82%D1%80%D0%B8%D0%B6"));
+    CHECK(contains(q, "exclude_q=%D0%BC%D0%B0%D1%88%D0%B8%D0%BD%D0%BA"));
+    CHECK(contains(q, "exclude_q=%D0%BD%D0%BE%D0%B6%D0%BD%D0%B8%D1%86"));
+    // Пустой и повтор отброшены: ровно два exclude_q.
+    std::size_t n = 0;
+    for (std::size_t p = q.find("exclude_q="); p != std::string::npos; p = q.find("exclude_q=", p + 1)) ++n;
+    CHECK_EQ(n, 2u);
+}
+
+TEST(tools_search_exclude_text_only_is_a_filter_and_needs_summary_support) {
+    Env e;
+    // exclude_text без других фильтров — это фильтр: в запросе summary=true, итог обязателен.
+    e.reports.set("/api/reports/operations",
+                  search_body({{"first_date", nullptr}, {"last_date", nullptr}, {"by_category", json::array()}}, 0));
+    json r = e.ok("search_operations", with(kSeptember, {{"kind", "any"}, {"exclude_text", json::array({"перевод"})}}));
+    CHECK(r.contains("total"));
+    CHECK(contains(e.reports.last("/api/reports/operations"), "exclude_q="));
+
+    // Старый wallet-report проигнорировал бы exclude_q и не отдал summary — это недоступность, а не неверная сумма.
+    e.reports.set("/api/reports/operations",
+                  {{"operations", json::array()}, {"incomplete", false}, {"has_more", false},
+                   {"eq_currency_uuid", "c-RUB"}, {"total_eq", "95.1"}, {"total_incomplete", false}, {"total_count", 3}});
+    tools::Outcome o = e.call("search_operations", with(kSeptember, {{"text", json::array({"стриж"})},
+                                                                      {"exclude_text", json::array({"машинк"})}}));
+    CHECK(o.kind == tools::Outcome::Kind::Unavailable);
+    CHECK_EQ(o.text, tools::kReportsUnavailable);
+}
+
+TEST(tools_search_exclude_text_invalid_params) {
+    Env e;
+    CHECK_THROWS(e.call("search_operations", with(kSeptember, {{"exclude_text", "машинка"}})));
+    json eleven = json::array();
+    for (int i = 0; i < 11; ++i) eleven.push_back("v" + std::to_string(i));
+    CHECK_THROWS(e.call("search_operations", with(kSeptember, {{"exclude_text", eleven}})));
+    CHECK(e.reports.requests.empty());
+}
+
+TEST(tools_search_other_matches_only_with_text_and_categories) {
+    Env e;
+    json other = json::array({cat_row("c-cafe", "Кафе", "15", 1)});
+    e.reports.set("/api/reports/operations",
+                  search_body({{"first_date", "2026-03-04"}, {"last_date", "2026-11-06"}, {"by_category", json::array()}}, 3,
+                              {{"other_matches", other}}));
+    json r = e.ok("search_operations", with(kSeptember, {{"text", json::array({"стриж"})}, {"categories", {"Проезд"}}}));
+    CHECK_EQ(r["other_matches"], (json{{{"category", "Кафе"}, {"count", 1}, {"total", "15.00"}}}));
+
+    e.reports.set("/api/reports/operations",
+                  search_body({{"first_date", "2026-03-04"}, {"last_date", "2026-11-06"}, {"by_category", json::array()}}, 3,
+                              {{"other_matches", json::array()}}));
+    json empty = e.ok("search_operations", with(kSeptember, {{"text", json::array({"стриж"})}, {"categories", {"Проезд"}}}));
+    CHECK(empty.contains("other_matches"));
+    CHECK_EQ(empty["other_matches"].size(), 0u);
+
+    // Без categories (или без text) поля нет, даже если wallet-report прислал.
+    json no_cats = e.ok("search_operations", with(kSeptember, {{"text", json::array({"стриж"})}}));
+    CHECK(!no_cats.contains("other_matches"));
+    json no_text = e.ok("search_operations", with(kSeptember, {{"categories", {"Проезд"}}}));
+    CHECK(!no_text.contains("other_matches"));
+}
+
 TEST(tools_reports_down_is_unavailable) {
     Env e;
     e.reports.set("/api/reports/balance", {{"error", "boom"}}, 500);
