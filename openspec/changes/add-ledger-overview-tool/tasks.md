@@ -7,7 +7,7 @@
 
 - [x] 1.1 Завести в wallet-report отдельный change с эндпоинтом `GET /api/reports/data-range` (`first_date`, `last_date`, `operations_count`, пустой леджер — `null`/`0`) и записью в `openapi.yaml`; проверка: `openspec validate` change в wallet-report проходит
 - [x] 1.2 Реализовать эндпоинт одним запросом по живым операциям леджера пользователя; проверка: юнит/интеграционный тест на леджер с операциями и на пустой леджер
-- [ ] 1.3 Выкатить wallet-report на test; проверка: `GET /api/reports/data-range` с токеном демо-аккаунта возвращает `first_date` `2025-12-01`, `operations_count` `475`
+- [x] 1.3 Выкатить wallet-report на test; проверка: `GET /api/reports/data-range` с токеном демо-аккаунта возвращает `first_date` `2025-12-01`, `operations_count` `475` (0.3.3-rc.1, 2026-11-19; на демо-аккаунте — через `ledger_overview`, см. 4.2)
 
 ## 2. wallet-mcp: инструмент ledger_overview
 
@@ -24,8 +24,8 @@
 ## 4. Документация и проверка на живом стеке
 
 - [x] 4.1 Добавить `ledger_overview` в таблицу инструментов `README.md`; проверка: README описывает восемь инструментов и их аргументы
-- [ ] 4.2 Выкатить wallet-mcp на test и вызвать `ledger_overview` через гейтвей токеном демо-аккаунта; проверка: `data_period` `2025-12-01..2026-11-19`, `operations_count` `475`, `default_currency` `EUR`
-- [ ] 4.3 В LM Studio (модель с вызовом инструментов) и в Claude Code задать «Сколько я тратил на кафе летом и сколько зимой?»; проверка: обе вызывают `ledger_overview`, не переспрашивают период, цифры лета 730,67 € и зимы 143,01 € совпадают с `spending_by_category_by_month` с `months_of_year`
+- [x] 4.2 Выкатить wallet-mcp на test и вызвать `ledger_overview` через гейтвей токеном демо-аккаунта; проверка: `data_period` `2025-12-01..2026-11-19`, `operations_count` `475`, `default_currency` `EUR` (0.3.3-rc.1, 2026-11-19; вызов из новой сессии Claude Code на MCP `wallet-test`: `data_period` `2025-12-01..2026-11-19`, 475, EUR; на QA-аккаунте владельца — зажим до `2023-12-01`)
+- [ ] 4.3 В LM Studio (модель с вызовом инструментов) и в Claude Code задать «Сколько я тратил на кафе летом и сколько зимой?»; проверка: обе вызывают `ledger_overview`, не переспрашивают период, цифры лета 730,67 € и зимы 143,01 € совпадают с `spending_by_category_by_month` с `months_of_year` (Claude Code — выполнено 2026-11-19: `ledger_overview` вызван первым, период не переспрошен, 730,67 € / 143,01 €, средние 243,56 / 47,67; LM Studio — не проверено)
 
 ## Workflow follow-up
 
