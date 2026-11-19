@@ -48,6 +48,12 @@ constexpr int kDefaultLimit = 20;
 constexpr std::size_t kCommentBytes = 120;
 constexpr int kMaxQuestionChars = 1000; // как maxLength в openapi.yaml wallet-docs
 
+// Начала описаний (change add-ledger-overview-tool): описания доходят до модели в
+// любом клиенте, в отличие от instructions, и стоят там, где модель решает, чем
+// заполнить from/to. Тесты сверяют начало каждого description.
+constexpr const char* kPeriodFirst = "Период не назван — сначала вызови ledger_overview.";
+constexpr const char* kOverviewFirst = "Вызови первым, если период в вопросе не назван.";
+
 json date_prop(const std::string& description) {
     return {{"type", "string"}, {"format", "date"}, {"description", description}};
 }
@@ -77,6 +83,13 @@ json build_registry() {
     json from = date_prop("Начало периода, ГГГГ-ММ-ДД, день включается");
     json to = date_prop("Конец периода, ГГГГ-ММ-ДД, день включается");
     json tools = json::array();
+    tools.push_back(tool("ledger_overview",
+                         std::string(kOverviewFirst) +
+                             " Что есть в леджере: сегодняшняя дата и день недели (today, weekday), период данных "
+                             "data_period (от первой операции до сегодня, не длиннее 36 месяцев), число операций "
+                             "operations_count, кошельки wallets, валюты currencies и валюта по умолчанию "
+                             "default_currency. Бери период из data_period и не спрашивай его у пользователя.",
+                         json::object()));
     tools.push_back(tool("list_wallets",
                          "Кошельки пользователя (без архивных): имя, валюта и баланс на конец сегодняшнего дня в "
                          "валюте кошелька, и общий итог total в валюте currency (посчитан сервером).",
@@ -89,7 +102,8 @@ json build_registry() {
                               "categories");
     tools.push_back(tool(
         "spending_by_category",
-        "Итоги расхода по категориям за период: сумма каждой категории (amount), число операций (count) и "
+        std::string(kPeriodFirst) +
+            " Итоги расхода по категориям за период: сумма каждой категории (amount), число операций (count) и "
         "среднее в месяц (avg_per_month), итог total — их сумма, посчитанная сервером, и months — сколько месяцев "
         "в периоде (делитель среднего). categories — имена категорий (можно начало имени); без них — все "
         "категории с расходом за период и total всего расхода; exclude_categories — все, кроме этих. С "
@@ -106,7 +120,8 @@ json build_registry() {
         {"from", "to"}));
     tools.push_back(tool(
         "spending_by_category_by_month",
-        "Средние в месяц, расход по месяцам и сезонность по категориям. У каждой категории сумма за период "
+        std::string(kPeriodFirst) +
+            " Средние в месяц, расход по месяцам и сезонность по категориям. У каждой категории сумма за период "
         "(amount), число операций (count) и среднее в месяц (avg_per_month); в ответе итог total, count, months — "
         "сколько месяцев в расчёте (неполные месяцы — по доле дней) и avg_per_month итога, всё посчитано "
         "сервером. С categories у строк есть by_month — суммы по непустым месяцам «ГГГГ-ММ». Период from..to — "
@@ -126,8 +141,9 @@ json build_registry() {
          {"currency", currency_prop()}},
         {"from", "to"}));
     tools.push_back(tool("income_expense_by_month",
-                         "Доход (income) и расход (expense) по каждому календарному месяцу периода, включая месяцы "
-                         "без операций (с нулями).",
+                         std::string(kPeriodFirst) +
+                             " Доход (income) и расход (expense) по каждому календарному месяцу периода, включая "
+                             "месяцы без операций (с нулями).",
                          {{"from", from}, {"to", to}, {"currency", currency_prop()}}, {"from", "to"}));
     tools.push_back(tool("balance",
                          "Баланс на конец дня date (по умолчанию — сегодня): по всем кошелькам или только по "
@@ -137,7 +153,8 @@ json build_registry() {
                           {"currency", currency_prop()}}));
     tools.push_back(tool(
         "search_operations",
-        "Поиск операций за период по комментарию (text), категориям (categories или все, кроме "
+        std::string(kPeriodFirst) +
+            " Поиск операций за период по комментарию (text), категориям (categories или все, кроме "
         "exclude_categories), кошелькам и типу kind. text — список вариантов: подходит комментарий с ЛЮБЫМ из "
         "них, поэтому синонимы и переводы передавай одним вызовом, например [\"стриж\", \"парикмах\", "
         "\"barber\", \"haircut\"]. Возвращает до limit последних операций; has_more: true — есть более ранние, "
@@ -492,6 +509,61 @@ ojson list_categories(Call& c, const json&) {
     return {{"categories", names}};
 }
 
+// ledger_overview (change add-ledger-overview-tool): что есть в леджере и какое
+// сегодня число — чтобы модель не просила период у пользователя. Суммы не
+// считаются: даты и число операций — факты wallet-report (/data-range).
+constexpr int kMaxMonths = 36; // самый длинный период spending_by_category_by_month
+constexpr const char* kOverviewHint =
+    "Если пользователь не назвал период, бери data_period. Суммы и средние бери из инструментов, сам не считай.";
+constexpr const char* kOverviewEmptyHint = "Операций пока нет — заведите их в приложении.";
+
+// Первое число месяца, самого раннего из kMaxMonths (36) месяцев, которые
+// задевает период, заканчивающийся сегодня: при today 2026-11-19 — 2023-12-01.
+// Дальше этого spending_by_category_by_month период не принимает.
+dates::Date earliest_period_start(const dates::Date& today) {
+    int index = today.year * 12 + (today.month - 1) - (kMaxMonths - 1);
+    return {index / 12, index % 12 + 1, 1};
+}
+
+ojson ledger_overview(Call& c, const Context& ctx) {
+    json range = c.fetch("/api/reports/data-range");
+    if (!range.contains("operations_count") || !range["operations_count"].is_number_integer() ||
+        !range.contains("first_date")) {
+        throw ReportsDown();
+    }
+    const long long count = range["operations_count"].get<long long>();
+
+    const resolver::Accounts& a = c.accounts();
+    ojson wallets = ojson::array();
+    ojson currencies = ojson::array();
+    std::unordered_set<std::string> seen;
+    for (const auto& w : a.wallets) {
+        wallets.push_back({{"name", w.name}, {"currency", w.iso_code}});
+        if (seen.insert(w.iso_code).second) currencies.push_back(w.iso_code);
+    }
+
+    ojson period = nullptr;
+    if (count > 0) {
+        if (!range["first_date"].is_string()) throw ReportsDown();
+        auto first = dates::parse(range["first_date"].get<std::string>());
+        if (!first) throw ReportsDown();
+        dates::Date from = *first;
+        dates::Date earliest = earliest_period_start(ctx.today);
+        if (from < earliest) from = earliest;
+        if (ctx.today < from) from = ctx.today; // операции «из будущего» не делают период обратным
+        period = {{"from", dates::to_string(from)}, {"to", dates::to_string(ctx.today)}};
+    }
+
+    return {{"today", dates::to_string(ctx.today)},
+            {"weekday", dates::weekday_ru(ctx.today)},
+            {"data_period", period},
+            {"operations_count", count},
+            {"wallets", wallets},
+            {"currencies", currencies},
+            {"default_currency", a.wallets.empty() ? ojson(nullptr) : ojson(a.wallets.front().iso_code)},
+            {"hint", count > 0 ? kOverviewHint : kOverviewEmptyHint}};
+}
+
 // list_wallets и balance: /balance?date=<день после> (граница не включается).
 ojson wallets_balance(Call& c, const json& args, const dates::Date& day) {
     Eq eq = c.currency(args);
@@ -740,8 +812,7 @@ ojson spending_by_category(Call& c, const json& args) {
 
 // ---------------------------------------------------------------------------
 // spending_by_category_by_month (change add-category-analytics).
-
-constexpr int kMaxMonths = 36;
+// kMaxMonths — выше, рядом с ledger_overview: тот же предел.
 
 struct MonthCell {
     json amount_eq; // строка или null
@@ -1278,7 +1349,9 @@ Outcome call(const std::string& name, const json& arguments, Context& ctx) {
     Outcome out;
     try {
         ojson result;
-        if (name == "list_wallets") {
+        if (name == "ledger_overview") {
+            result = ledger_overview(c, ctx);
+        } else if (name == "list_wallets") {
             result = list_wallets(c, arguments, ctx);
         } else if (name == "list_categories") {
             result = list_categories(c, arguments);

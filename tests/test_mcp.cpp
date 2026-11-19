@@ -115,6 +115,8 @@ TEST(mcp_instructions_text) {
     CHECK(text.find("«этот месяц» (октябрь) — from 2026-10-01, to 2026-10-31") != std::string::npos);
     CHECK(text.find("«прошлый месяц» (сентябрь) — from 2026-09-01, to 2026-09-30") != std::string::npos);
     CHECK(text.find("без своих пояснений в скобках") != std::string::npos);
+    CHECK(text.find("Если период в вопросе не назван, не спрашивай его у пользователя — вызови ledger_overview.") !=
+          std::string::npos);
     CHECK(text.find("Среднее в месяц бери из avg_per_month, сравнение месяцев года (лето, зима) — через "
                     "months_of_year в spending_by_category_by_month; сам не дели и не складывай.") != std::string::npos);
 
@@ -123,11 +125,11 @@ TEST(mcp_instructions_text) {
     CHECK(nov.find("2026-09-01") == std::string::npos);
 }
 
-TEST(mcp_tools_list_has_exactly_seven_read_tools) {
+TEST(mcp_tools_list_has_exactly_eight_read_tools) {
     json j = call(R"({"jsonrpc":"2.0","id":1,"method":"tools/list"})");
     const json& list = j["result"]["tools"];
     REQUIRE(list.is_array());
-    CHECK_EQ(list.size(), 7u);
+    CHECK_EQ(list.size(), 8u);
     std::vector<std::string> names;
     for (const auto& t : list) {
         names.push_back(t["name"]);
@@ -138,9 +140,30 @@ TEST(mcp_tools_list_has_exactly_seven_read_tools) {
             CHECK(!t["inputSchema"]["properties"].contains(forbidden));
         }
     }
-    CHECK((names == std::vector<std::string>{"list_wallets", "list_categories", "spending_by_category",
-                                             "spending_by_category_by_month", "income_expense_by_month", "balance",
-                                             "search_operations"}));
+    CHECK((names == std::vector<std::string>{"ledger_overview", "list_wallets", "list_categories",
+                                             "spending_by_category", "spending_by_category_by_month",
+                                             "income_expense_by_month", "balance", "search_operations"}));
+}
+
+TEST(mcp_tool_descriptions_start_with_period_hint) {
+    json j = call(R"({"jsonrpc":"2.0","id":1,"method":"tools/list"})");
+    const std::string period_first = "Период не назван — сначала вызови ledger_overview.";
+    const std::string overview_first = "Вызови первым, если период в вопросе не назван.";
+    int with_period = 0;
+    for (const auto& t : j["result"]["tools"]) {
+        const std::string name = t["name"];
+        const std::string d = t["description"];
+        if (name == "ledger_overview") {
+            CHECK(d.rfind(overview_first, 0) == 0);
+        } else if (name == "spending_by_category" || name == "spending_by_category_by_month" ||
+                   name == "income_expense_by_month" || name == "search_operations") {
+            CHECK(d.rfind(period_first, 0) == 0);
+            ++with_period;
+        } else {
+            CHECK(d.find(period_first) == std::string::npos);
+        }
+    }
+    CHECK_EQ(with_period, 4);
 }
 
 TEST(mcp_tools_call_unknown_tool) {

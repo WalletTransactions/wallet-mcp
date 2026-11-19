@@ -66,16 +66,16 @@ struct DocsEnv {
 } // namespace
 
 TEST(docs_tools_list_states) {
-    CHECK_EQ(tools::list(false)["tools"].size(), 7u);
+    CHECK_EQ(tools::list(false)["tools"].size(), 8u);
     json with = tools::list(true);
-    CHECK_EQ(with["tools"].size(), 8u);
-    CHECK_EQ(with["tools"][7]["name"], "ask_docs");
+    CHECK_EQ(with["tools"].size(), 9u);
+    CHECK_EQ(with["tools"][8]["name"], "ask_docs");
     CHECK(!tools::exists("ask_docs", false));
     CHECK(tools::exists("ask_docs", true));
-    const json& schema = with["tools"][7]["inputSchema"];
+    const json& schema = with["tools"][8]["inputSchema"];
     CHECK_EQ(schema["additionalProperties"], false);
     CHECK_EQ(schema["properties"]["question"]["maxLength"], 1000);
-    std::string d = with["tools"][7]["description"];
+    std::string d = with["tools"][8]["description"];
     CHECK(d.find("не отдаёт") != std::string::npos);
 }
 
