@@ -92,6 +92,7 @@ HTTP `200`: `-32700` (не JSON), `-32600` (не JSON-RPC 2.0, батч), `-3260
 
 | Инструмент | Аргументы | Ответ | wallet-report |
 | --- | --- | --- | --- |
+| `ledger_overview` | — | `today`, `weekday`, `data_period{from, to}` (от первой операции до сегодня, не длиннее 36 месяцев; без операций `null`), `operations_count`, `wallets[{name, currency}]`, `currencies[]`, `default_currency`, `hint` | `data-range`, `accounts` |
 | `list_wallets` | `currency?` | `wallets[{name, currency, balance}]`, `total`, `incomplete`, `date` | `accounts`, `balance?date=<завтра>` |
 | `list_categories` | — | `categories[]` без системных и архивных | `accounts` |
 | `spending_by_category` | `from`, `to`, `categories?`, `exclude_categories?`, `compare_from?`, `compare_to?`, `currency?` | `rows[{category, amount, amount_before?, delta?, count, avg_per_month, count_before?, avg_per_month_before?}]`, `total`, `total_before?`, `incomplete`, `count`, `months`, `avg_per_month`, `count_before?`, `months_before?`, `avg_per_month_before?` | `expense-structure` ×1 или ×2 |
@@ -103,10 +104,18 @@ HTTP `200`: `-32700` (не JSON), `-32600` (не JSON-RPC 2.0, батч), `-3260
 
 Детали:
 
-- **`ask_docs`.** Необязательный восьмой инструмент: ответ на вопрос «как
+- **`ledger_overview`.** Вызывается первым, если период в вопросе не назван:
+  отдаёт сегодняшнюю дату и `data_period`, чтобы модель не переспрашивала
+  период. Описания `spending_by_category`, `spending_by_category_by_month`,
+  `income_expense_by_month` и `search_operations` начинаются с «Период не
+  назван — сначала вызови ledger_overview.» — описания доходят до модели в
+  любом клиенте, в отличие от `instructions` (LM Studio их не показывает).
+  Нужен wallet-report с `GET /api/reports/data-range`; без него инструмент
+  отвечает «Отчёты временно недоступны».
+- **`ask_docs`.** Необязательный девятый инструмент: ответ на вопрос «как
   работает система, приложение или MCP» по OpenSpec-спекам сервиса
   wallet-docs. Без `WALLET_DOCS_URL` его нет в `tools/list`, `tools/call` с
-  этим именем — `-32602`, остальные семь работают как прежде. Для вызова
+  этим именем — `-32602`, остальные восемь работают как прежде. Для вызова
   сервис берёт у google-auth отдельный JWT (`aud` = `wallet-docs`, `scope` =
   `docs:ask`, кеш отдельный от JWT для wallet-report); область разделов
   определяет wallet-docs по JWT, у инструмента нет аргументов области.

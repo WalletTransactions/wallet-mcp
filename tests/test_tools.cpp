@@ -986,3 +986,63 @@ TEST(tools_by_month_report_without_endpoint_is_unavailable) {
     CHECK(o.kind == tools::Outcome::Kind::Unavailable);
     CHECK_EQ(o.text, tools::kReportsUnavailable);
 }
+
+// ledger_overview (change add-ledger-overview-tool). Сегодня в Env — 2026-10-31.
+TEST(tools_overview_year_of_data) {
+    Env e;
+    e.reports.set("/api/reports/data-range",
+                  {{"first_date", "2025-12-01"}, {"last_date", "2026-10-30"}, {"operations_count", 475}});
+    json r = e.ok("ledger_overview", json::object());
+    CHECK_EQ(r["today"], "2026-10-31");
+    CHECK_EQ(r["weekday"], "суббота");
+    CHECK_EQ(r["data_period"], (json{{"from", "2025-12-01"}, {"to", "2026-10-31"}}));
+    CHECK_EQ(r["operations_count"], 475);
+    CHECK_EQ(r["wallets"], (json{{{"name", "Наличные"}, {"currency", "RUB"}}, {{"name", "Revolut"}, {"currency", "EUR"}}}));
+    CHECK_EQ(r["currencies"], (json{"RUB", "EUR"}));
+    CHECK_EQ(r["default_currency"], "RUB");
+    CHECK(contains(r["hint"], "бери data_period"));
+}
+
+TEST(tools_overview_long_history_clamped_to_36_months) {
+    Env e;
+    e.reports.set("/api/reports/data-range",
+                  {{"first_date", "2019-03-14"}, {"last_date", "2026-10-30"}, {"operations_count", 9000}});
+    json r = e.ok("ledger_overview", json::object());
+    // 36 месяцев, считая текущий: ноябрь 2023 .. октябрь 2026, с первого числа.
+    CHECK_EQ(r["data_period"], (json{{"from", "2023-11-01"}, {"to", "2026-10-31"}}));
+    CHECK_EQ(r["operations_count"], 9000); // полный объём, не только период
+}
+
+TEST(tools_overview_empty_ledger) {
+    Env e;
+    e.reports.set("/api/reports/data-range",
+                  {{"first_date", nullptr}, {"last_date", nullptr}, {"operations_count", 0}});
+    json r = e.ok("ledger_overview", json::object());
+    CHECK(r["data_period"].is_null());
+    CHECK_EQ(r["operations_count"], 0);
+    CHECK_EQ(r["hint"], "Операций пока нет — заведите их в приложении.");
+}
+
+TEST(tools_overview_reports_down_is_error) {
+    {
+        Env e;
+        e.reports.set("/api/reports/data-range", {{"error", "boom"}}, 500);
+        tools::Outcome o = e.call("ledger_overview", json::object());
+        CHECK(o.kind == tools::Outcome::Kind::Unavailable);
+        CHECK_EQ(o.text, tools::kReportsUnavailable);
+    }
+    {
+        Env e;
+        e.reports.set("/api/reports/data-range",
+                      {{"first_date", "2025-12-01"}, {"last_date", "2026-10-30"}, {"operations_count", 5}});
+        e.reports.set("/api/reports/accounts", {{"error", "boom"}}, 500);
+        tools::Outcome o = e.call("ledger_overview", json::object());
+        CHECK(o.kind == tools::Outcome::Kind::Unavailable);
+        CHECK_EQ(o.text, tools::kReportsUnavailable);
+    }
+}
+
+TEST(tools_overview_takes_no_arguments) {
+    Env e;
+    CHECK_THROWS(e.call("ledger_overview", json{{"from", "2026-01-01"}}));
+}
