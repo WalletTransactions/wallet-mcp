@@ -3,6 +3,8 @@
 // через гейтвей — как wallet-report. Контракт — openapi.yaml wallet-docs.
 #pragma once
 
+#include "net/tls.hpp"
+
 #include <memory>
 #include <string>
 
@@ -25,6 +27,6 @@ public:
 
 // Соединение 3 с, чтение 25 с (D8: короче таймаута гейтвея в 30 с).
 std::unique_ptr<DocsApi> make_http_api(const std::string& base_url, int connect_timeout_ms = 3000,
-                                       int read_timeout_ms = 25000);
+                                       int read_timeout_ms = 25000, const nettls::Config& tls = {});
 
 } // namespace docsclient
