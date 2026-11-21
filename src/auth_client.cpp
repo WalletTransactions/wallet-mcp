@@ -1,6 +1,7 @@
 #include "auth_client.hpp"
 
 #include "httplib.h"
+#include "net/tls.hpp"
 #include "nlohmann/json.hpp"
 #include "util/log.hpp"
 
@@ -57,12 +58,14 @@ std::string error_code(const std::string& body) {
 
 class HttpAuthApi final : public AuthApi {
 public:
-    HttpAuthApi(std::string base_url, int connect_timeout_ms, int read_timeout_ms, std::string exchange_secret)
+    HttpAuthApi(std::string base_url, int connect_timeout_ms, int read_timeout_ms, std::string exchange_secret,
+                nettls::Config tls)
         : base_url_(std::move(base_url)), connect_ms_(connect_timeout_ms), read_ms_(read_timeout_ms),
-          exchange_secret_(std::move(exchange_secret)) {}
+          exchange_secret_(std::move(exchange_secret)), tls_(std::move(tls)) {}
 
     Exchange exchange(const std::string& mcp_token, const std::string& audience) override {
         auto client = make_client();
+        if (!client) return tls_error();
         json body{{"token", mcp_token}};
         if (!audience.empty()) body["audience"] = audience;
         auto res = client->Post("/internal/mcp/token", trace_headers(), body.dump(), "application/json");
@@ -77,6 +80,7 @@ public:
             return out;
         }
         auto client = make_client();
+        if (!client) return tls_error();
         httplib::Headers headers = trace_headers();
         headers.emplace("X-Service-Secret", exchange_secret_);
         httplib::Params form{{"grant_type", kGrantTokenExchange},
@@ -89,8 +93,12 @@ public:
     }
 
 private:
+    // TLS_CERT/TLS_KEY/TLS_CA заданы — https к служебному порту google-auth с клиентским
+    // сертификатом и проверкой CA и имени (add-internal-mtls); иначе обычный HTTP.
+    // nullptr — TLS включён, но клиент не создан (на старте это проверено в main.cpp).
     std::unique_ptr<httplib::Client> make_client() const {
-        auto client = std::make_unique<httplib::Client>(base_url_);
+        auto client = nettls::make_client(base_url_, tls_);
+        if (!client) return nullptr;
         client->set_connection_timeout(connect_ms_ / 1000, (connect_ms_ % 1000) * 1000);
         client->set_read_timeout(read_ms_ / 1000, (read_ms_ % 1000) * 1000);
         client->set_write_timeout(read_ms_ / 1000, (read_ms_ % 1000) * 1000);
@@ -104,6 +112,12 @@ private:
         return headers;
     }
 
+    static Exchange tls_error() {
+        Exchange out;
+        out.error = "TLS-клиент google-auth не создан (TLS_CERT, TLS_KEY, TLS_CA)";
+        return out;
+    }
+
     static Exchange network_error(httplib::Error e) {
         Exchange out;
         out.error = "google-auth недоступен: " + httplib::to_string(e);
@@ -114,6 +128,7 @@ private:
     int connect_ms_;
     int read_ms_;
     std::string exchange_secret_;
+    nettls::Config tls_;
 };
 
 } // namespace
@@ -154,8 +169,9 @@ Exchange parse_token_exchange_response(int status, const std::string& body) {
 }
 
 std::unique_ptr<AuthApi> make_http_api(const std::string& base_url, int connect_timeout_ms, int read_timeout_ms,
-                                       std::string exchange_secret) {
-    return std::make_unique<HttpAuthApi>(base_url, connect_timeout_ms, read_timeout_ms, std::move(exchange_secret));
+                                       std::string exchange_secret, const nettls::Config& tls) {
+    return std::make_unique<HttpAuthApi>(base_url, connect_timeout_ms, read_timeout_ms, std::move(exchange_secret),
+                                         tls);
 }
 
 } // namespace auth

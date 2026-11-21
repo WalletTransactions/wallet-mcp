@@ -101,7 +101,22 @@ int main() {
     // с публичного AUTH_SERVICE_URL.
     std::string auth_internal_url = strip_trailing_slash(env_or("AUTH_INTERNAL_URL", ""));
     if (auth_internal_url.empty()) auth_internal_url = auth_url;
-    auto auth_api = auth::make_http_api(auth_internal_url, 3000, 5000, exchange_secret);
+    // Взаимный TLS к служебному порту google-auth (change add-internal-mtls, шаг 5): заданы
+    // TLS_CERT/TLS_KEY/TLS_CA — /internal/* по https с клиентским сертификатом. Задано не
+    // всё или файлы нечитаемы — ошибка старта, а не молчаливый возврат на HTTP.
+    auto tls_loaded = nettls::config_from_env();
+    if (!tls_loaded.error.empty()) {
+        applog::error(tls_loaded.error);
+        return 1;
+    }
+    if (tls_loaded.config.enabled()) {
+        std::string tls_error;
+        if (!nettls::make_client(auth_internal_url, tls_loaded.config, &tls_error)) {
+            applog::error(tls_error);
+            return 1;
+        }
+    }
+    auto auth_api = auth::make_http_api(auth_internal_url, 3000, 5000, exchange_secret, tls_loaded.config);
     mcpaccess::TokenCache tokens(*auth_api);
     auto reports_api = reports::make_http_api(report_url, "mcp_reports_errors_total");
     directory::Cache directory;

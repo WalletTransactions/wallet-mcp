@@ -78,6 +78,7 @@ add_library(wallet_mcp_core STATIC
     ${WALLET_COMMON_DIR}/util/jwks.cpp
     ${WALLET_COMMON_DIR}/util/jwt.cpp
     ${WALLET_COMMON_DIR}/util/jwt_claims.cpp
+    ${WALLET_COMMON_DIR}/net/tls.cpp
     ${WALLET_COMMON_DIR}/util/log.cpp
     ${WALLET_COMMON_DIR}/util/metrics.cpp
     ${WALLET_COMMON_DIR}/util/uuid.cpp
@@ -89,12 +90,17 @@ target_include_directories(wallet_mcp_core PUBLIC
     ${CMAKE_BINARY_DIR}/generated
 )
 target_compile_definitions(wallet_mcp_core PUBLIC
+    # TLS у httplib: вызовы /internal/* google-auth по mTLS (net/tls из wallet-common,
+    # change add-internal-mtls). PUBLIC — одинаково во всех единицах трансляции, иначе
+    # классы httplib различаются по раскладке (ODR).
+    CPPHTTPLIB_OPENSSL_SUPPORT
     $<$<CXX_COMPILER_ID:MSVC>:_CRT_SECURE_NO_WARNINGS>
 )
 target_compile_options(wallet_mcp_core PUBLIC
     $<$<CXX_COMPILER_ID:MSVC>:/utf-8>
 )
 target_link_libraries(wallet_mcp_core PUBLIC
+    OpenSSL::SSL
     OpenSSL::Crypto
     Threads::Threads
 )

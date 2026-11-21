@@ -14,6 +14,8 @@
 #include <memory>
 #include <string>
 
+#include "net/tls.hpp"
+
 namespace auth {
 
 struct Exchange {
@@ -58,7 +60,11 @@ Exchange parse_token_exchange_response(int status, const std::string& body);
 // Сеть и таймаут — Unavailable. exchange_secret — X-Service-Secret actor'а
 // wallet-mcp для /internal/token/exchange; пустой — exchange_jwt сразу
 // Unavailable (путь JWT выключен, до него запрос не доходит).
+//
+// tls — TLS_CERT/TLS_KEY/TLS_CA (net/tls из wallet-common): заданы — вызовы идут по
+// mTLS на служебный порт google-auth (add-internal-mtls); пусто — обычный HTTP.
 std::unique_ptr<AuthApi> make_http_api(const std::string& base_url, int connect_timeout_ms = 3000,
-                                       int read_timeout_ms = 5000, std::string exchange_secret = "");
+                                       int read_timeout_ms = 5000, std::string exchange_secret = "",
+                                       const nettls::Config& tls = {});
 
 } // namespace auth
