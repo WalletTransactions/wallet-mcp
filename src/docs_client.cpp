@@ -14,11 +14,11 @@ namespace {
 
 class HttpDocsApi final : public DocsApi {
 public:
-    HttpDocsApi(std::string base_url, int connect_ms, int read_ms)
-        : base_url_(std::move(base_url)), connect_ms_(connect_ms), read_ms_(read_ms) {}
+    HttpDocsApi(std::string base_url, int connect_ms, int read_ms, nettls::Config tls)
+        : base_url_(std::move(base_url)), connect_ms_(connect_ms), read_ms_(read_ms), tls_(std::move(tls)) {}
 
     Response ask(const std::string& question, const std::string& access_token) override {
-        httplib::Client client(base_url_);
+        httplib::Client client = nettls::client_value(base_url_, tls_);
         client.set_connection_timeout(connect_ms_ / 1000, (connect_ms_ % 1000) * 1000);
         client.set_read_timeout(read_ms_ / 1000, (read_ms_ % 1000) * 1000);
         client.set_write_timeout(connect_ms_ / 1000, (connect_ms_ % 1000) * 1000);
@@ -50,12 +50,14 @@ private:
     std::string base_url_;
     int connect_ms_;
     int read_ms_;
+    nettls::Config tls_;
 };
 
 } // namespace
 
-std::unique_ptr<DocsApi> make_http_api(const std::string& base_url, int connect_timeout_ms, int read_timeout_ms) {
-    return std::make_unique<HttpDocsApi>(base_url, connect_timeout_ms, read_timeout_ms);
+std::unique_ptr<DocsApi> make_http_api(const std::string& base_url, int connect_timeout_ms, int read_timeout_ms,
+                                       const nettls::Config& tls) {
+    return std::make_unique<HttpDocsApi>(base_url, connect_timeout_ms, read_timeout_ms, tls);
 }
 
 } // namespace docsclient

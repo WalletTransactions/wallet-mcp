@@ -118,7 +118,7 @@ int main() {
     }
     auto auth_api = auth::make_http_api(auth_internal_url, 3000, 5000, exchange_secret, tls_loaded.config);
     mcpaccess::TokenCache tokens(*auth_api);
-    auto reports_api = reports::make_http_api(report_url, "mcp_reports_errors_total");
+    auto reports_api = reports::make_http_api(report_url, "mcp_reports_errors_total", nettls::internal_client_config(nettls::settings_from_env()));
     directory::Cache directory;
     mcphttp::Deps deps{tokens, *reports_api, directory, tz_name, version::kVersion};
     if (!exchange_secret.empty()) deps.jwt_keys = mcpaccess::lazy_jwks(auth_url);
@@ -131,14 +131,29 @@ int main() {
     if (docs_url.empty()) {
         applog::info("docs tool disabled (WALLET_DOCS_URL empty)");
     } else {
-        docs_api = docsclient::make_http_api(docs_url);
+        docs_api = docsclient::make_http_api(docs_url, 3000, 25000, nettls::internal_client_config(nettls::settings_from_env()));
         docs_tokens = std::make_unique<mcpaccess::TokenCache>(*auth_api, mcpaccess::steady_clock(),
                                                               mcpaccess::wall_clock(), "wallet-docs");
         deps.docs = docs_api.get();
         deps.docs_tokens = docs_tokens.get();
     }
 
-    httplib::Server svr;
+    // Взаимный TLS внутри контура (change add-internal-mtls, шаг 7): INTERNAL_MTLS=true — сервер
+    // требует клиентский сертификат от CA контура; иначе обычный HTTP, как раньше. Неполные TLS_*
+    // или нечитаемые файлы — ошибка старта, а не молчаливый возврат на HTTP.
+    auto tls_settings = nettls::settings_from_env();
+    if (!tls_settings.error.empty()) {
+        applog::error(tls_settings.error);
+        return 1;
+    }
+    std::string tls_error;
+    auto svr_owner = nettls::make_server(nettls::server_config(tls_settings), &tls_error);
+    if (!svr_owner) {
+        applog::error(tls_error);
+        return 1;
+    }
+    httplib::Server& svr = *svr_owner;
+    if (tls_settings.serve) applog::info("mTLS: сервер требует клиентский сертификат (INTERNAL_MTLS=true)");
     svr.set_pre_routing_handler(handle_pre_routing);
     // Лимит тела (спека mcp-transport): больше 64 КБ — 413 до хендлера, то
     // есть до аутентификации и разбора.
