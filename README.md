@@ -95,8 +95,8 @@ HTTP `200`: `-32700` (не JSON), `-32600` (не JSON-RPC 2.0, батч), `-3260
 | `ledger_overview` | — | `today`, `weekday`, `data_period{from, to}` (от первой операции до сегодня, не длиннее 36 месяцев; без операций `null`), `operations_count`, `wallets[{name, currency}]`, `currencies[]`, `default_currency`, `hint` | `data-range`, `accounts` |
 | `list_wallets` | `currency?` | `wallets[{name, currency, balance}]`, `total`, `incomplete`, `date` | `accounts`, `balance?date=<завтра>` |
 | `list_categories` | — | `categories[]` без системных и архивных | `accounts` |
-| `spending_by_category` | `from`, `to`, `categories?`, `exclude_categories?`, `compare_from?`, `compare_to?`, `currency?` | `rows[{category, amount, amount_before?, delta?, count, avg_per_month, count_before?, avg_per_month_before?}]`, `total`, `total_before?`, `incomplete`, `count`, `months`, `avg_per_month`, `count_before?`, `months_before?`, `avg_per_month_before?` | `expense-structure` ×1 или ×2 |
-| `spending_by_category_by_month` | `from`, `to`, `categories?`, `exclude_categories?`, `months_of_year?`, `currency?` | `rows[{category, amount, count, avg_per_month, by_month?}]`, `months_of_year?`, `total`, `count`, `months`, `avg_per_month`, `incomplete` | `expense-by-category-by-month` ×1 |
+| `spending_by_category` | `from`, `to`, `categories?`, `exclude_categories?`, `compare_from?`, `compare_to?`, `currency?` | `rows[{category, amount, amount_before?, delta?, count, avg_per_month, count_before?, avg_per_month_before?, similar?}]`, `total`, `total_before?`, `incomplete`, `count`, `months`, `avg_per_month`, `count_before?`, `months_before?`, `avg_per_month_before?` | `expense-structure` ×1 или ×2 |
+| `spending_by_category_by_month` | `from`, `to`, `categories?`, `exclude_categories?`, `months_of_year?`, `currency?` | `rows[{category, amount, count, avg_per_month, by_month?, similar?}]`, `months_of_year?`, `total`, `count`, `months`, `avg_per_month`, `incomplete` | `expense-by-category-by-month` ×1 |
 | `income_expense_by_month` | `from`, `to`, `currency?` | `months[{month, income, expense}]`, `incomplete` | `income-expense-by-month` |
 | `balance` | `wallet?`, `date?`, `currency?` | как `list_wallets` на конец дня `date` | `balance?date=<date+1>` |
 | `search_operations` | `from?`, `to?`, `text?` (массив вариантов), `exclude_text?` (массив вариантов), `categories?`, `exclude_categories?`, `wallets?`, `kind?`, `limit?`, `cursor?`, `currency?` | `operations[{date, kind, amount, currency, category, wallet \| from, to, comment}]`, `has_more`, `next_cursor?`, `total`, `count`, `incomplete`, `kind`, `summary{first_date?, last_date?, avg_interval_days?, by_category[{category, count, total}]}`, `other_matches?[{category, count, total}]` | `operations` с `category_uuid`/`exclude_category_uuid`/`wallet_uuid`/`kind`/`q` и `exclude_q` (повторённые)/`summary=true`/`limit`/`cursor_date`+`cursor_uuid` |
@@ -155,6 +155,19 @@ HTTP `200`: `-32700` (не JSON), `-32600` (не JSON-RPC 2.0, батч), `-3260
   контекст маленькой модели. Без `categories`, `exclude_categories` и
   `months_of_year` `total` — `total_eq` wallet-report, иначе точная сумма
   строк.
+- **`similar` у обоих инструментов.** Если выбранная через `categories`
+  категория дала `amount` ровно `0`, её строка получает `similar` — массив
+  `{category, amount, count}` по категориям той же темы, где расход в периоде
+  есть (`count` — `null` у wallet-report без `op_count`). Не больше пяти, по
+  убыванию суммы; выбранных и исключённых категорий там нет; у помесячного
+  инструмента суммы — за выбранные `months_of_year`. Нет похожих или тема не
+  определена — `similar: []` («проверено, ничего нет»); у строк с расходом и
+  без `categories` поля нет. Тема — встроенная таблица групп слов
+  (`src/category_themes.cpp`: кафе и рестораны, продукты, транспорт и такси,
+  аптека и врач; регистр, `ё` = `е`, `é` = `e`; «кафе» и `bar` — только
+  целиком, «ресторан» и `restaurant` — как основа). Это подсказка про ответ, а
+  не поиск имени: `resolve_name` не меняется, «кафе» по-прежнему не находит
+  `Café`. Суммы — значения wallet-report, сервис их только сравнивает.
 - **`categories` и `exclude_categories`** вместе — `isError` «Задайте
   categories или exclude_categories, не оба.».
 - **`balance`, `list_wallets`.** Баланс на конец дня запрашивается как

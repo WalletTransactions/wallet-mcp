@@ -2,6 +2,7 @@ add_executable(wallet_mcp_tests
     test_main.cpp
     test_access.cpp
     test_auth_client.cpp
+    test_category_themes.cpp
     test_dates.cpp
     test_decimal.cpp
     test_docs.cpp

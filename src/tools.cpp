@@ -7,6 +7,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "category_themes.hpp"
 #include "clients/reports_client.hpp"
 #include "decimal.hpp"
 #include "expense/text.hpp"
@@ -109,7 +110,8 @@ json build_registry() {
         "категории с расходом за период и total всего расхода; exclude_categories — все, кроме этих. С "
         "compare_from и compare_to — то же за период сравнения: amount_before, delta = amount − amount_before, "
         "total_before, count_before, avg_per_month_before и months_before; периоды разной длины сравнивай по "
-        "avg_per_month.",
+        "avg_per_month. Если у выбранной категории amount 0, смотри similar — расход той же темы лежит в других "
+        "категориях (имя, amount, count).",
         {{"from", from},
          {"to", to},
          {"categories", names_prop("Имена категорий, например [\"Няня\", \"Продукты\"]")},
@@ -126,7 +128,8 @@ json build_registry() {
         "сколько месяцев в расчёте (неполные месяцы — по доле дней) и avg_per_month итога, всё посчитано "
         "сервером. С categories у строк есть by_month — суммы по непустым месяцам «ГГГГ-ММ». Период from..to — "
         "непрерывный, не длиннее 36 месяцев; months_of_year — фильтр месяцев года внутри периода: лето — [6, 7, "
-        "8], остальные месяцы — вторым вызовом с тем же периодом.",
+        "8], остальные месяцы — вторым вызовом с тем же периодом. Если у выбранной категории amount 0, смотри "
+        "similar — расход той же темы лежит в других категориях (имя, amount, count).",
         {{"from", from},
          {"to", to},
          {"categories", names_prop("Имена категорий; с ними в ответе есть by_month")},
@@ -659,6 +662,41 @@ std::unordered_set<std::string> uuid_set(const std::vector<text::Named>& v) {
     return out;
 }
 
+// Категория периода как кандидат в `similar` (change add-similar-categories-hint).
+struct SimilarSource {
+    std::string uuid;
+    std::string name;
+    std::optional<decimal::Decimal> amount; // nullopt — суммы нет (курса не нашлось)
+    std::optional<long long> count;
+};
+
+constexpr std::size_t kMaxSimilar = 5;
+
+// `similar` нулевой строки: категории той же темы с ненулевым расходом,
+// не из skip (выбранные и исключённые), до пяти, по убыванию суммы. Суммы и
+// счётчики — значения wallet-report, сервис их сравнивает, но не считает. Нет
+// подходящих — пустой массив («проверено, ничего нет»).
+ojson similar_categories(const std::string& zero_name, const std::vector<SimilarSource>& pool,
+                         const std::unordered_set<std::string>& skip, int precision) {
+    std::vector<const SimilarSource*> hits;
+    if (themes::theme_mask(zero_name) != 0) {
+        for (const auto& s : pool) {
+            if (skip.count(s.uuid) || !s.amount || s.amount->units == 0) continue;
+            if (themes::same_theme(zero_name, s.name)) hits.push_back(&s);
+        }
+    }
+    std::stable_sort(hits.begin(), hits.end(),
+                     [](const SimilarSource* a, const SimilarSource* b) { return a->amount->units > b->amount->units; });
+    if (hits.size() > kMaxSimilar) hits.resize(kMaxSimilar);
+    ojson out = ojson::array();
+    for (const SimilarSource* s : hits) {
+        out.push_back({{"category", s->name},
+                       {"amount", decimal::format(*s->amount, precision)},
+                       {"count", s->count ? ojson(*s->count) : ojson(nullptr)}});
+    }
+    return out;
+}
+
 struct Structure {
     std::vector<std::pair<std::string, std::string>> order;       // uuid, имя — в порядке ответа
     std::unordered_map<std::string, json> amount_eq;               // uuid -> строка или null
@@ -735,6 +773,16 @@ ojson spending_by_category(Call& c, const json& args) {
     std::optional<Months> months_before;
     if (cmp) months_before = months_of(dates::month_fractions(cmp->from, cmp->to));
 
+    // Кандидаты для `similar` — все категории периода (не только выбранные).
+    std::vector<SimilarSource> similar_pool;
+    std::unordered_set<std::string> similar_skip = excluded;
+    if (!selected.empty()) {
+        for (const auto& n : selected) similar_skip.insert(n.uuid);
+        for (const auto& [uuid, name] : now.order) {
+            similar_pool.push_back({uuid, name, dec(value_of(now, uuid)), count_of(now, uuid)});
+        }
+    }
+
     bool incomplete = false;
     decimal::Decimal total{}, total_before{};
     std::optional<long long> count = 0, count_before = 0;
@@ -771,6 +819,10 @@ ojson spending_by_category(Call& c, const json& args) {
         if (before) {
             row["count_before"] = count_json(nb);
             row["avg_per_month_before"] = average(db, *months_before, eq.precision);
+        }
+        // Выбранная категория без расхода — подсказка, где лежит её тема.
+        if (!selected.empty() && da && da->units == 0) {
+            row["similar"] = similar_categories(name, similar_pool, similar_skip, eq.precision);
         }
         rows.push_back(std::move(row));
     }
@@ -897,6 +949,44 @@ ojson spending_by_category_by_month(Call& c, const json& args) {
         }
     }
 
+    // Расход категории за выбранные месяцы: без фильтра месяцев — итог
+    // категории из SQL; с фильтром — точная сумма выбранных клеток (D1, D2).
+    // Одно правило и для строк ответа, и для кандидатов в `similar`.
+    struct Aggregate {
+        std::optional<decimal::Decimal> sum = decimal::Decimal{};
+        std::optional<long long> n = 0;
+        bool any_cell = false;
+    };
+    auto aggregate = [&](const MatrixRow* src) {
+        Aggregate a;
+        if (src == nullptr) return a;
+        const bool from_sql = moy.empty() && src->has_total;
+        if (from_sql) {
+            a.sum = dec(src->total_eq);
+            a.n = src->count;
+        }
+        for (const auto& [key, cell] : src->months) {
+            if (!selected_keys.count(key)) continue;
+            a.any_cell = true;
+            if (from_sql) continue;
+            auto d = dec(cell.amount_eq);
+            a.sum = a.sum && d ? std::optional<decimal::Decimal>(decimal::add(*a.sum, *d)) : std::nullopt;
+            a.n = a.n && cell.count ? std::optional<long long>(*a.n + *cell.count) : std::nullopt;
+        }
+        return a;
+    };
+
+    // Кандидаты для `similar` — все категории матрицы за выбранные месяцы.
+    std::vector<SimilarSource> similar_pool;
+    std::unordered_set<std::string> similar_skip = excluded;
+    if (!selected.empty()) {
+        for (const auto& n : selected) similar_skip.insert(n.uuid);
+        for (const auto& r : matrix) {
+            Aggregate a = aggregate(&r);
+            similar_pool.push_back({r.uuid, r.name, a.sum, a.n});
+        }
+    }
+
     const bool filtered = !selected.empty() || !excluded.empty() || !moy.empty();
     bool incomplete = false;
     decimal::Decimal total{};
@@ -905,27 +995,16 @@ ojson spending_by_category_by_month(Call& c, const json& args) {
     for (const auto& [uuid, name] : rows_order) {
         auto it = by_uuid.find(uuid);
         const MatrixRow* src = it == by_uuid.end() ? nullptr : it->second;
-        std::optional<decimal::Decimal> sum = decimal::Decimal{};
-        std::optional<long long> n = 0;
+        const Aggregate agg = aggregate(src);
+        const std::optional<decimal::Decimal>& sum = agg.sum;
+        const std::optional<long long>& n = agg.n;
+        const bool any_cell = agg.any_cell;
         ojson by_month = ojson::object();
-        bool any_cell = false;
-        // Без фильтра месяцев — итог категории из SQL; с фильтром — точная
-        // сумма выбранных клеток (D1, D2).
-        const bool from_sql = src != nullptr && moy.empty() && src->has_total;
-        if (from_sql) {
-            sum = dec(src->total_eq);
-            n = src->count;
-        }
-        if (src != nullptr) {
+        if (src != nullptr && !selected.empty()) {
             for (const auto& [key, cell] : src->months) {
                 if (!selected_keys.count(key)) continue;
-                any_cell = true;
                 auto d = dec(cell.amount_eq);
-                if (!from_sql) {
-                    sum = sum && d ? std::optional<decimal::Decimal>(decimal::add(*sum, *d)) : std::nullopt;
-                    n = n && cell.count ? std::optional<long long>(*n + *cell.count) : std::nullopt;
-                }
-                if (!selected.empty() && !(d && d->units == 0)) by_month[key] = amount(cell.amount_eq, eq.precision);
+                if (!(d && d->units == 0)) by_month[key] = amount(cell.amount_eq, eq.precision);
             }
         }
         // Без categories — только категории с расходом в выбранных месяцах.
@@ -936,6 +1015,10 @@ ojson spending_by_category_by_month(Call& c, const json& args) {
                      {"count", count_json(n)},
                      {"avg_per_month", average(sum, months, eq.precision)}};
         if (!selected.empty()) row["by_month"] = by_month;
+        // Выбранная категория без расхода — подсказка, где лежит её тема.
+        if (!selected.empty() && sum && sum->units == 0) {
+            row["similar"] = similar_categories(name, similar_pool, similar_skip, eq.precision);
+        }
         if (sum) {
             total = decimal::add(total, *sum);
         } else {
