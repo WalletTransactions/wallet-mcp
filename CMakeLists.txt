@@ -60,6 +60,7 @@ configure_file(
 add_library(wallet_mcp_core STATIC
     src/access.cpp
     src/auth_client.cpp
+    src/category_themes.cpp
     src/dates.cpp
     src/decimal.cpp
     src/directory.cpp

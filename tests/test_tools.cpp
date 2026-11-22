@@ -823,7 +823,8 @@ TEST(tools_spending_category_without_expense) {
     Env e;
     e.reports.set("/api/reports/expense-structure", structure({counted_row("c-nanny", "Няня", "300.00", 2)}, "300.00"));
     json r = e.ok("spending_by_category", with(kSeptember, {{"categories", {"Кафе"}}}));
-    CHECK_EQ(r["rows"][0], (json{{"category", "Кафе"}, {"amount", "0.00"}, {"count", 0}, {"avg_per_month", "0.00"}}));
+    CHECK_EQ(r["rows"][0], (json{{"category", "Кафе"}, {"amount", "0.00"}, {"count", 0}, {"avg_per_month", "0.00"},
+                                 {"similar", json::array()}}));
     CHECK_EQ(r["count"], 0);
 }
 
@@ -911,7 +912,8 @@ TEST(tools_by_month_by_month_only_with_categories) {
     // Выбранная категория без трат — нули и пустой by_month.
     json cafe = e.ok("spending_by_category_by_month", with(summer, {{"categories", {"Кафе"}}}));
     CHECK_EQ(cafe["rows"][0], (json{{"category", "Кафе"}, {"amount", "0.00"}, {"count", 0},
-                                    {"avg_per_month", "0.00"}, {"by_month", json::object()}}));
+                                    {"avg_per_month", "0.00"}, {"by_month", json::object()},
+                                    {"similar", {{{"category", "Bar"}, {"amount", "90.00"}, {"count", 3}}}}}));
 }
 
 TEST(tools_by_month_summer_plus_rest_equals_whole) {
@@ -1045,4 +1047,166 @@ TEST(tools_overview_reports_down_is_error) {
 TEST(tools_overview_takes_no_arguments) {
     Env e;
     CHECK_THROWS(e.call("ledger_overview", json{{"from", "2026-01-01"}}));
+}
+
+// ---------------------------------------------------------------------------
+// similar (change add-similar-categories-hint).
+
+namespace {
+
+json similar_accounts() {
+    return accounts_plus({{"c-cafe-ru", "Кафе и рестораны"}, {"c-cafe-en", "Café"}, {"c-rest", "Restaurants"}});
+}
+
+json cafe_structure() {
+    return structure({counted_row("c-cafe-en", "Café", "112.44", 14), counted_row("c-rest", "Restaurants", "987.39", 64),
+                      counted_row("c-nanny", "Няня", "500.00", 2)},
+                     "1599.83");
+}
+
+} // namespace
+
+TEST(tools_similar_cafe_in_english_categories) {
+    Env e;
+    e.reports.set("/api/reports/accounts", similar_accounts());
+    e.reports.set("/api/reports/expense-structure", cafe_structure());
+    json r = e.ok("spending_by_category", with(kSeptember, {{"categories", {"Кафе и рестораны"}}}));
+    CHECK_EQ(r["rows"][0]["amount"], "0.00");
+    CHECK_EQ(r["rows"][0]["similar"], (json{{{"category", "Restaurants"}, {"amount", "987.39"}, {"count", 64}},
+                                             {{"category", "Café"}, {"amount", "112.44"}, {"count", 14}}}));
+    // Поле — после прежних ключей строки.
+    const nlohmann::ordered_json parsed =
+        nlohmann::ordered_json::parse(e.call("spending_by_category", with(kSeptember, {{"categories", {"Кафе и рестораны"}}})).text);
+    std::vector<std::string> keys;
+    for (const auto& item : parsed["rows"][0].items()) keys.push_back(item.key());
+    CHECK((keys == std::vector<std::string>{"category", "amount", "count", "avg_per_month", "similar"}));
+}
+
+TEST(tools_similar_theme_without_spending_is_empty_array) {
+    Env e;
+    e.reports.set("/api/reports/expense-structure",
+                  structure({counted_row("c-rest", "Restaurants", "0.00", 0), counted_row("c-nanny", "Няня", "9", 1)}, "9"));
+    json r = e.ok("spending_by_category", with(kSeptember, {{"categories", {"Кафе"}}}));
+    REQUIRE(r["rows"][0].contains("similar"));
+    CHECK_EQ(r["rows"][0]["similar"], json::array());
+}
+
+TEST(tools_similar_undefined_theme_is_empty_array) {
+    Env e;
+    e.reports.set("/api/reports/accounts", similar_accounts());
+    e.reports.set("/api/reports/expense-structure",
+                  structure({counted_row("c-cafe-en", "Café", "112.44", 14)}, "112.44"));
+    json r = e.ok("spending_by_category", with(kSeptember, {{"categories", {"Няня"}}}));
+    CHECK_EQ(r["rows"][0]["amount"], "0.00");
+    REQUIRE(r["rows"][0].contains("similar"));
+    CHECK_EQ(r["rows"][0]["similar"], json::array());
+}
+
+TEST(tools_similar_absent_when_there_is_spending) {
+    Env e;
+    e.reports.set("/api/reports/accounts", similar_accounts());
+    e.reports.set("/api/reports/expense-structure", cafe_structure());
+    json r = e.ok("spending_by_category", with(kSeptember, {{"categories", {"Café"}}}));
+    CHECK_EQ(r["rows"][0]["amount"], "112.44");
+    CHECK(!r["rows"][0].contains("similar"));
+}
+
+TEST(tools_similar_skips_already_selected) {
+    Env e;
+    e.reports.set("/api/reports/accounts", similar_accounts());
+    e.reports.set("/api/reports/expense-structure", cafe_structure());
+    json r = e.ok("spending_by_category", with(kSeptember, {{"categories", {"Кафе и рестораны", "Café"}}}));
+    CHECK_EQ(r["rows"][0]["similar"], (json{{{"category", "Restaurants"}, {"amount", "987.39"}, {"count", 64}}}));
+    CHECK(!r["rows"][1].contains("similar"));
+}
+
+TEST(tools_similar_absent_without_categories) {
+    Env e;
+    e.reports.set("/api/reports/expense-structure",
+                  structure({counted_row("c-cafe-ru", "Кафе и рестораны", "0", 0),
+                             counted_row("c-cafe-en", "Café", "112.44", 14)},
+                            "112.44"));
+    json r = e.ok("spending_by_category", kSeptember);
+    CHECK_EQ(r["rows"].size(), 2u);
+    for (const auto& row : r["rows"]) CHECK(!row.contains("similar"));
+    json ex = e.ok("spending_by_category", with(kSeptember, {{"exclude_categories", {"Няня"}}}));
+    for (const auto& row : ex["rows"]) CHECK(!row.contains("similar"));
+}
+
+TEST(tools_similar_without_op_count_has_null_count) {
+    Env e;
+    e.reports.set("/api/reports/expense-structure",
+                  structure({cat_row("c-cafe-en", "Café", "112.44"), cat_row("c-nanny", "Няня", "5")}, "117.44"));
+    json r = e.ok("spending_by_category", with(kSeptember, {{"categories", {"Кафе"}}}));
+    CHECK_EQ(r["rows"][0]["similar"], (json{{{"category", "Café"}, {"amount", "112.44"}, {"count", nullptr}}}));
+}
+
+TEST(tools_similar_at_most_five_by_amount) {
+    Env e;
+    std::vector<json> rows;
+    const char* names[] = {"Cafe 1", "Cafe 2", "Cafe 3", "Cafe 4", "Cafe 5", "Cafe 6", "Cafe 7"};
+    const char* uuids[] = {"u1", "u2", "u3", "u4", "u5", "u6", "u7"};
+    const char* sums[] = {"10", "70", "30", "60", "20", "50", "40"};
+    for (int i = 0; i < 7; ++i) rows.push_back(counted_row(uuids[i], names[i], sums[i], 1));
+    e.reports.set("/api/reports/expense-structure", structure(rows, "280"));
+    json r = e.ok("spending_by_category", with(kSeptember, {{"categories", {"Кафе"}}}));
+    std::vector<std::string> got;
+    for (const auto& s : r["rows"][0]["similar"]) got.push_back(s["category"]);
+    CHECK((got == std::vector<std::string>{"Cafe 2", "Cafe 4", "Cafe 6", "Cafe 7", "Cafe 3"}));
+}
+
+TEST(tools_similar_whole_word_and_case_and_diacritics) {
+    Env e;
+    e.reports.set("/api/reports/expense-structure",
+                  structure({counted_row("c-kafel", "Кафель", "900", 3), counted_row("c-cafe-en", "Café", "112.44", 14)},
+                            "1012.44"));
+    json r = e.ok("spending_by_category", with(kSeptember, {{"categories", {"КАФЕ"}}}));
+    REQUIRE(r["rows"][0].contains("similar"));
+    CHECK_EQ(r["rows"][0]["similar"], (json{{{"category", "Café"}, {"amount", "112.44"}, {"count", 14}}}));
+}
+
+TEST(tools_similar_null_amount_row_has_no_similar) {
+    Env e;
+    e.reports.set("/api/reports/expense-structure",
+                  structure({counted_row("c-cafe", "Кафе", nullptr, 2), counted_row("c-cafe-en", "Café", "5", 1)}, "5", true));
+    json r = e.ok("spending_by_category", with(kSeptember, {{"categories", {"Кафе"}}}));
+    CHECK(r["rows"][0]["amount"].is_null());
+    CHECK(!r["rows"][0].contains("similar"));
+}
+
+TEST(tools_similar_by_month_base_case) {
+    Env e;
+    e.reports.set("/api/reports/accounts", similar_accounts());
+    e.reports.set("/api/reports/expense-by-category-by-month",
+                  fakes::by_month_body({fakes::matrix_row("c-cafe-en", "Café", "112.44", 14,
+                                                          {fakes::month_cell("2026-01-01", "112.44", 14)}),
+                                        fakes::matrix_row("c-rest", "Restaurants", "987.39", 64,
+                                                          {fakes::month_cell("2026-07-01", "987.39", 64)})},
+                                       {"2026-01-01", "2026-07-01"}, "1099.83"));
+    json r = e.ok("spending_by_category_by_month",
+                  {{"from", "2026-01-01"}, {"to", "2026-07-31"}, {"categories", {"Кафе и рестораны"}}});
+    CHECK_EQ(r["rows"][0]["amount"], "0.00");
+    CHECK_EQ(r["rows"][0]["similar"], (json{{{"category", "Restaurants"}, {"amount", "987.39"}, {"count", 64}},
+                                             {{"category", "Café"}, {"amount", "112.44"}, {"count", 14}}}));
+    // Без categories поля нет.
+    json all = e.ok("spending_by_category_by_month", {{"from", "2026-01-01"}, {"to", "2026-07-31"}});
+    for (const auto& row : all["rows"]) CHECK(!row.contains("similar"));
+}
+
+TEST(tools_similar_by_month_honours_months_of_year) {
+    Env e;
+    e.reports.set("/api/reports/accounts", similar_accounts());
+    // «Café» тратили только зимой — за июнь–август её в similar нет.
+    e.reports.set("/api/reports/expense-by-category-by-month",
+                  fakes::by_month_body({fakes::matrix_row("c-cafe-en", "Café", "112.44", 14,
+                                                          {fakes::month_cell("2026-01-01", "60.00", 7),
+                                                           fakes::month_cell("2026-02-01", "52.44", 7)}),
+                                        fakes::matrix_row("c-rest", "Restaurants", "987.39", 64,
+                                                          {fakes::month_cell("2026-07-01", "987.39", 64)})},
+                                       {"2026-01-01", "2026-02-01", "2026-07-01"}, "1099.83"));
+    json r = e.ok("spending_by_category_by_month", {{"from", "2026-01-01"},
+                                                    {"to", "2026-08-31"},
+                                                    {"months_of_year", {6, 7, 8}},
+                                                    {"categories", {"Кафе и рестораны"}}});
+    CHECK_EQ(r["rows"][0]["similar"], (json{{{"category", "Restaurants"}, {"amount", "987.39"}, {"count", 64}}}));
 }

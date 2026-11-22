@@ -166,6 +166,22 @@ TEST(mcp_tool_descriptions_start_with_period_hint) {
     CHECK_EQ(with_period, 4);
 }
 
+TEST(mcp_spending_descriptions_mention_similar) {
+    json j = call(R"({"jsonrpc":"2.0","id":1,"method":"tools/list"})");
+    int found = 0;
+    for (const auto& t : j["result"]["tools"]) {
+        const std::string name = t["name"];
+        const std::string d = t["description"];
+        if (name == "spending_by_category" || name == "spending_by_category_by_month") {
+            CHECK(d.find("similar") != std::string::npos);
+            ++found;
+        } else {
+            CHECK(d.find("similar") == std::string::npos);
+        }
+    }
+    CHECK_EQ(found, 2);
+}
+
 TEST(mcp_tools_call_unknown_tool) {
     tool_calls = 0;
     json j = call(R"({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"delete_operation","arguments":{}}})");
