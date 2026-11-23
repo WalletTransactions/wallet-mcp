@@ -40,14 +40,28 @@
 
 ### Requirement: Валюта эквивалента
 Инструменты с суммами SHALL принимать необязательный `currency` (ISO-код).
-Если он не задан, используется валюта первого кошелька из справочника
-`GET /api/reports/accounts`. Неизвестный код приводит к `isError: true`. Если
-кошельков нет, возвращается `isError: true` с текстом «Кошельков пока нет —
-заведите их в приложении.».
+Если он не задан, используется первая подходящая из: `preferred_eq_currency`
+справочника `GET /api/reports/currencies` (валюта, сохранённая пользователем);
+`EUR`, если он есть в справочнике и не скрыт из эквивалента; валюта первого
+кошелька из справочника `GET /api/reports/accounts`. Неизвестный код приводит к
+`isError: true`. Если кошельков нет, возвращается `isError: true` с текстом
+«Кошельков пока нет — заведите их в приложении.».
+
+#### Scenario: Валюта, выбранная пользователем
+- **WHEN** справочник валют отвечает `preferred_eq_currency: "RUB"`, первый кошелёк — «Albanian» (ALL), `currency` не задан
+- **THEN** суммы считаются в RUB, и в ответе `currency: "RUB"`
+
+#### Scenario: Ничего не выбрано, EUR есть
+- **WHEN** `preferred_eq_currency: null`, первый кошелёк — «Albanian» (ALL), `EUR` в справочнике есть и не скрыт
+- **THEN** суммы считаются в EUR
 
 #### Scenario: Валюта по умолчанию
-- **WHEN** у пользователя кошельки «Наличные» (RUB) и «Revolut» (EUR) в этом порядке справочника, `currency` не задан
+- **WHEN** `preferred_eq_currency` нет, `EUR` в справочнике нет, у пользователя кошельки «Наличные» (RUB) и «Revolut» (USD) в этом порядке справочника, `currency` не задан
 - **THEN** суммы считаются в RUB, и в ответе `currency: "RUB"`
+
+#### Scenario: Явная валюта главнее
+- **WHEN** `preferred_eq_currency: "RUB"`, вызов с `currency: "EUR"`
+- **THEN** суммы считаются в EUR
 
 ### Requirement: Эхо условий расчёта
 Каждый успешный ответ инструмента с суммами SHALL содержать `currency`, а
@@ -489,8 +503,9 @@ wallet-report. Если таких категорий нет, `other_matches` SH
 укладывается в 36 месяцев и начинается с первого числа месяца), `operations_count`
 (число живых операций за всё время), `wallets` (`name`, `currency` живых
 неархивных кошельков в порядке справочника), `currencies` (ISO-коды без повторов),
-`default_currency` (валюта первого кошелька) и `hint`. Источники —
-`GET /api/reports/data-range` и `GET /api/reports/accounts` wallet-report; сервис
+`default_currency` (валюта по умолчанию из «Валюта эквивалента») и `hint`.
+Источники — `GET /api/reports/data-range`, `GET /api/reports/accounts` и
+`GET /api/reports/currencies` wallet-report; сервис
 сам операций не читает и ничего не суммирует.
 
 Если операций нет, `data_period` равен `null`, `operations_count` — `0`, а `hint`
@@ -513,6 +528,10 @@ wallet-report. Если таких категорий нет, `other_matches` SH
 #### Scenario: Нет доступа к данным
 - **WHEN** wallet-report не отвечает или возвращает ошибку
 - **THEN** `isError: true` с текстом ошибки, как у остальных инструментов
+
+#### Scenario: Выбранная валюта в обзоре
+- **WHEN** справочник валют отвечает `preferred_eq_currency: "EUR"`, первый кошелёк — «Albanian» (ALL)
+- **THEN** `default_currency` — `EUR`
 
 ### Requirement: Подсказка про период в описаниях
 Описание каждого инструмента с периодом (`spending_by_category`,
@@ -588,3 +607,56 @@ SHALL содержать `similar` — массив `{category, amount, count}` 
 #### Scenario: Помесячный инструмент и месяцы года
 - **WHEN** `spending_by_category_by_month`, `categories: ["Кафе и рестораны"]`, `months_of_year: [6, 7, 8]`, а «Café» тратили только зимой
 - **THEN** `similar` у «Кафе и рестораны» не содержит «Café»
+
+### Requirement: "*" означает все
+Если в `wallets`, `categories` или `exclude_categories` среди имён есть `"*"`
+или `wallet` равен `"*"`, инструмент SHALL отвечать так, как будто этот
+параметр не передан: без фильтра и без ошибки «не найдено». Другие имена в том
+же массиве при этом не учитываются. Описания `wallets` и `categories` в
+`tools/list` SHALL говорить, что для выбора всех параметр не передаётся.
+
+#### Scenario: Все кошельки в поиске
+- **WHEN** `search_operations` с `categories: ["Baby Sitter"]`, `wallets: ["*"]`
+- **THEN** запрос в wallet-report уходит без `wallet_uuid`, ответ — операции «Baby Sitter» из всех кошельков, `isError` нет
+
+#### Scenario: Все категории в расходе
+- **WHEN** `spending_by_category` с `categories: ["*"]`
+- **THEN** ответ такой же, как без `categories`: все категории периода и `total` из `total_eq`
+
+#### Scenario: Звёздочка вместе с именем
+- **WHEN** `wallets: ["*", "Cash"]`
+- **THEN** фильтра по кошелькам нет
+
+#### Scenario: Баланс по всем
+- **WHEN** `balance` с `wallet: "*"`
+- **THEN** ответ как без `wallet`: все кошельки и `total`
+
+### Requirement: Совпадения вне фильтра кошельков
+Если в `search_operations` задан `wallets`, курсора нет и подходящих операций
+нет (`count` 0), ответ SHALL содержать `outside_wallets: {count, total}` по тем
+же условиям во всех кошельках; значения считает wallet-report. `count: 0` —
+«проверено, нет и в других кошельках». В остальных случаях поля нет.
+
+#### Scenario: Операции лежат в другом кошельке
+- **WHEN** `categories: ["Baby Sitter"]`, `wallets` — все кошельки, кроме Cash, а все 7 операций периода сделаны с Cash на 2 078.00
+- **THEN** `count` 0, `operations` пуст, `outside_wallets` — `{"count": 7, "total": "2078.00"}`
+
+#### Scenario: Нигде нет
+- **WHEN** `categories: ["Baby Sitter"]`, `wallets: ["Cash"]`, операций по категории в периоде нет ни в одном кошельке
+- **THEN** `outside_wallets` — `{"count": 0, "total": "0.00"}`
+
+#### Scenario: Нашлось
+- **WHEN** `wallets: ["Cash"]`, найдено 3 операции
+- **THEN** поля `outside_wallets` нет, второй запрос не делается
+
+#### Scenario: Без wallets
+- **WHEN** `categories: ["Baby Sitter"]` без `wallets`, ничего не найдено
+- **THEN** поля `outside_wallets` нет
+
+#### Scenario: Второй запрос не удался
+- **WHEN** `wallets: ["Cash"]`, ничего не найдено, а повторный запрос без кошельков wallet-report отклонил или вернул без итога
+- **THEN** основной ответ возвращается без ошибки и без `outside_wallets`
+
+#### Scenario: Следующая страница
+- **WHEN** `wallets: ["Cash"]` и передан `cursor`
+- **THEN** поля `outside_wallets` нет, второй запрос не делается
