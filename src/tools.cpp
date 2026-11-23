@@ -70,8 +70,9 @@ json names_prop(const std::string& description) {
 
 json currency_prop() {
     return {{"type", "string"},
-            {"description", "ISO-код валюты эквивалента для сумм, например RUB. По умолчанию — валюта первого "
-                            "кошелька; фактическая валюта всегда есть в ответе (currency)"}};
+            {"description", "ISO-код валюты эквивалента для сумм, например RUB. По умолчанию — валюта, "
+                            "выбранная пользователем в настройках, иначе EUR, иначе валюта первого кошелька; "
+                            "фактическая валюта всегда есть в ответе (currency)"}};
 }
 
 json tool(const std::string& name, const std::string& description, json properties,
@@ -401,11 +402,11 @@ public:
     Eq currency(const json& args) {
         const auto& a = accounts();
         if (a.wallets.empty()) throw ToolFailure(kNoWallets);
-        if (!has(args, "currency")) return {a.wallets.front().iso_code, a.wallets.front().precision};
+        if (!has(args, "currency")) return default_currency();
         std::string raw = args["currency"].get<std::string>();
         std::string iso = trim(raw);
         for (auto& ch : iso) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
-        const auto& list = currencies();
+        const auto& list = currencies().list;
         for (const auto& c : list) {
             if (c.iso_code == iso) return {c.iso_code, c.precision};
         }
@@ -414,6 +415,33 @@ public:
             if (c.show_in_equivalent) shown.push_back(c.iso_code);
         }
         throw ToolFailure("Валюта \"" + raw + "\" не найдена. Есть: " + join(shown) + ".");
+    }
+
+    // Валюта по умолчанию (change user-eq-currency), первая подходящая:
+    // preferred_eq_currency из настроек пользователя (если она есть в
+    // справочнике валют) → EUR, если он есть и не скрыт из эквивалента →
+    // валюта первого кошелька. Кошельки уже проверены вызывающим (не пусты).
+    // Справочник валют здесь — только подсказка: если wallet-report его не
+    // отдал, считаем в валюте первого кошелька, как до user-eq-currency, а не
+    // роняем инструмент.
+    Eq default_currency() {
+        const auto& first = accounts().wallets.front();
+        Eq fallback{first.iso_code, first.precision};
+        const directory::Currencies* dir = nullptr;
+        try {
+            dir = &currencies();
+        } catch (const ReportsDown&) {
+            return fallback;
+        }
+        if (dir->preferred_eq_currency) {
+            for (const auto& c : dir->list) {
+                if (c.iso_code == *dir->preferred_eq_currency) return {c.iso_code, c.precision};
+            }
+        }
+        for (const auto& c : dir->list) {
+            if (c.iso_code == "EUR" && c.show_in_equivalent) return {c.iso_code, c.precision};
+        }
+        return fallback;
     }
 
     // Валюта кошелька по его uuid (у строк /operations только символ).
@@ -433,7 +461,7 @@ private:
         fresh_ = true;
     }
 
-    const std::vector<directory::Currency>& currencies() {
+    const directory::Currencies& currencies() {
         if (!currencies_) {
             auto cached = ctx_.directory.currencies(ctx_.reports.key());
             if (cached) {
@@ -492,7 +520,7 @@ private:
 
     Context& ctx_;
     std::optional<resolver::Accounts> accounts_;
-    std::optional<std::vector<directory::Currency>> currencies_;
+    std::optional<directory::Currencies> currencies_;
     bool fresh_ = false; // справочник уже загружен в этом вызове
 };
 
@@ -567,7 +595,7 @@ ojson ledger_overview(Call& c, const Context& ctx) {
             {"operations_count", count},
             {"wallets", wallets},
             {"currencies", currencies},
-            {"default_currency", a.wallets.empty() ? ojson(nullptr) : ojson(a.wallets.front().iso_code)},
+            {"default_currency", a.wallets.empty() ? ojson(nullptr) : ojson(c.default_currency().iso)},
             {"hint", count > 0 ? kOverviewHint : kOverviewEmptyHint}};
 }
 

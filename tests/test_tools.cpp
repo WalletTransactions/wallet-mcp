@@ -11,6 +11,19 @@ using nlohmann::json;
 
 namespace {
 
+// Справочник валют без EUR и без preferred_eq_currency (wallet-report до
+// user-eq-currency): валюта по умолчанию — первого кошелька, RUB.
+json currencies_dir(bool eur, bool eur_shown = true) {
+    auto cur = [](const char* iso, int precision, bool show) {
+        return json{{"uuid", std::string("c-") + iso}, {"iso_code", iso}, {"name", iso}, {"symbol", iso},
+                    {"icon_sha256", ""}, {"show_in_equivalent", show}, {"is_own", false}, {"icon_uuid", ""},
+                    {"precision", precision}};
+    };
+    json list = {cur("ALL", 2, true), cur("JPY", 0, true), cur("RUB", 2, true)};
+    if (eur) list.push_back(cur("EUR", 2, eur_shown));
+    return {{"currencies", list}};
+}
+
 struct Env {
     fakes::FakeAuth auth;
     fakes::FakeReports reports;
@@ -18,7 +31,10 @@ struct Env {
     mcpaccess::TokenCache tokens{auth};
     directory::Cache directory{clock.fn()};
 
-    Env() { reports.set("/api/reports/accounts", fakes::accounts_body()); }
+    Env() {
+        reports.set("/api/reports/accounts", fakes::accounts_body());
+        reports.set("/api/reports/currencies", currencies_dir(false));
+    }
 
     tools::Outcome call(const std::string& name, const json& args) {
         mcpaccess::UserReports ur(reports, tokens, fakes::token(), tokens.get(fakes::token()));
@@ -117,13 +133,105 @@ TEST(tools_list_wallets) {
     CHECK_EQ(r["incomplete"], true);
 }
 
+// Валюта по умолчанию (change user-eq-currency): preferred_eq_currency →
+// EUR (есть и не скрыт) → первый кошелёк. В Env EUR в справочнике валют нет.
 TEST(tools_default_currency_is_first_wallet) {
     Env e;
     e.reports.set("/api/reports/expense-structure", structure({}, "0"));
     json r = e.ok("spending_by_category", kSeptember);
     CHECK_EQ(r["currency"], "RUB");
     CHECK(contains(e.reports.last("/api/reports/expense-structure"), "eq_currency=RUB"));
-    CHECK_EQ(e.reports.count("/api/reports/currencies"), 0);
+    // Без currency справочник валют теперь нужен: в нём выбор пользователя.
+    CHECK_EQ(e.reports.count("/api/reports/currencies"), 1);
+}
+
+namespace {
+
+// Справочник, где первый кошелёк — «Albanian» (ALL), как в общем леджере на test.
+json albanian_first() {
+    json body = fakes::accounts_body();
+    json albanian = body["accounts"][0];
+    albanian["uuid"] = "w-all";
+    albanian["name"] = "Albanian";
+    albanian["currency_uuid"] = "c-ALL";
+    albanian["iso_code"] = "ALL";
+    albanian["symbol"] = "ALL";
+    body["accounts"].insert(body["accounts"].begin(), albanian);
+    return body;
+}
+
+json with_preferred(json body, json preferred) {
+    body["preferred_eq_currency"] = std::move(preferred);
+    return body;
+}
+
+std::string default_eq(Env& e) {
+    e.reports.set("/api/reports/expense-structure", structure({}, "0"));
+    json r = e.ok("spending_by_category", kSeptember);
+    std::string iso = r["currency"].get<std::string>();
+    CHECK(contains(e.reports.last("/api/reports/expense-structure"), "eq_currency=" + iso));
+    return iso;
+}
+
+} // namespace
+
+TEST(tools_default_currency_user_choice) {
+    Env e;
+    e.reports.set("/api/reports/accounts", albanian_first());
+    e.reports.set("/api/reports/currencies", with_preferred(currencies_dir(true), "RUB"));
+    CHECK_EQ(default_eq(e), "RUB");
+    // Выбор кешируется вместе со справочником валют (60 с на сессию).
+    CHECK_EQ(default_eq(e), "RUB");
+    CHECK_EQ(e.reports.count("/api/reports/currencies"), 1);
+}
+
+TEST(tools_default_currency_eur_when_not_chosen) {
+    Env e;
+    e.reports.set("/api/reports/accounts", albanian_first());
+    e.reports.set("/api/reports/currencies", with_preferred(currencies_dir(true), nullptr));
+    CHECK_EQ(default_eq(e), "EUR");
+}
+
+TEST(tools_default_currency_old_report_without_field) {
+    Env e;
+    e.reports.set("/api/reports/accounts", albanian_first());
+    e.reports.set("/api/reports/currencies", currencies_dir(true)); // поля preferred_eq_currency нет
+    CHECK_EQ(default_eq(e), "EUR");
+}
+
+TEST(tools_default_currency_hidden_eur_skipped) {
+    Env e;
+    e.reports.set("/api/reports/accounts", albanian_first());
+    e.reports.set("/api/reports/currencies", with_preferred(currencies_dir(true, false), nullptr));
+    CHECK_EQ(default_eq(e), "ALL");
+}
+
+TEST(tools_default_currency_unknown_preferred_skipped) {
+    Env e;
+    e.reports.set("/api/reports/accounts", albanian_first());
+    e.reports.set("/api/reports/currencies", with_preferred(currencies_dir(true), "XYZ"));
+    CHECK_EQ(default_eq(e), "EUR");
+}
+
+TEST(tools_explicit_currency_beats_preferred) {
+    Env e;
+    e.reports.set("/api/reports/currencies", with_preferred(currencies_dir(true), "RUB"));
+    e.reports.set("/api/reports/expense-structure", structure({}, "0"));
+    json r = e.ok("spending_by_category", with(kSeptember, {{"currency", "EUR"}}));
+    CHECK_EQ(r["currency"], "EUR");
+    CHECK(contains(e.reports.last("/api/reports/expense-structure"), "eq_currency=EUR"));
+}
+
+TEST(tools_default_currency_survives_currencies_down) {
+    // Справочник валют без currency — только подсказка: при отказе
+    // wallet-report инструмент считает в валюте первого кошелька.
+    Env e;
+    e.reports.set("/api/reports/accounts", albanian_first());
+    e.reports.set("/api/reports/currencies", {{"error", "boom"}}, 500);
+    CHECK_EQ(default_eq(e), "ALL");
+    // Явная валюта без справочника по-прежнему не проверить — ошибка доступа.
+    tools::Outcome o = e.call("spending_by_category", with(kSeptember, {{"currency", "EUR"}}));
+    CHECK(o.kind == tools::Outcome::Kind::Unavailable);
 }
 
 TEST(tools_explicit_currency_checked_by_directory) {
@@ -1001,8 +1109,19 @@ TEST(tools_overview_year_of_data) {
     CHECK_EQ(r["operations_count"], 475);
     CHECK_EQ(r["wallets"], (json{{{"name", "Наличные"}, {"currency", "RUB"}}, {{"name", "Revolut"}, {"currency", "EUR"}}}));
     CHECK_EQ(r["currencies"], (json{"RUB", "EUR"}));
-    CHECK_EQ(r["default_currency"], "RUB");
+    CHECK_EQ(r["default_currency"], "RUB"); // в Env EUR в справочнике валют нет
     CHECK(contains(r["hint"], "бери data_period"));
+}
+
+TEST(tools_overview_preferred_currency) {
+    Env e;
+    e.reports.set("/api/reports/data-range",
+                  {{"first_date", "2025-12-01"}, {"last_date", "2026-10-30"}, {"operations_count", 475}});
+    e.reports.set("/api/reports/accounts", albanian_first());
+    e.reports.set("/api/reports/currencies", with_preferred(currencies_dir(true), "EUR"));
+    json r = e.ok("ledger_overview", json::object());
+    CHECK_EQ(r["wallets"][0]["name"], "Albanian");
+    CHECK_EQ(r["default_currency"], "EUR");
 }
 
 TEST(tools_overview_long_history_clamped_to_36_months) {

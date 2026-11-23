@@ -89,13 +89,18 @@ HTTP `200`: `-32700` (не JSON), `-32600` (не JSON-RPC 2.0, батч), `-3260
 снимается, как будто его не передали (change `add-wildcard-names`, issue #39).
 Даты —
 `ГГГГ-ММ-ДД`, обе границы периода включаются. `currency` (ISO) необязателен:
-по умолчанию берётся валюта первого кошелька справочника. Каждый ответ —
+по умолчанию берётся первая подходящая из: `preferred_eq_currency` справочника
+`/api/reports/currencies` (валюта, выбранная пользователем в настройках веба),
+`EUR` (если он есть и не скрыт из эквивалента), валюта первого кошелька
+справочника (change `user-eq-currency`). Справочник валют кешируется 60 с, так
+что новый выбор доходит до MCP не позже чем через минуту; если wallet-report его
+не отдал, считается в валюте первого кошелька. Каждый ответ —
 компактный JSON с `period` и `currency`, по которым он посчитан. Суммы —
 строки, по `precision` валюты.
 
 | Инструмент | Аргументы | Ответ | wallet-report |
 | --- | --- | --- | --- |
-| `ledger_overview` | — | `today`, `weekday`, `data_period{from, to}` (от первой операции до сегодня, не длиннее 36 месяцев; без операций `null`), `operations_count`, `wallets[{name, currency}]`, `currencies[]`, `default_currency`, `hint` | `data-range`, `accounts` |
+| `ledger_overview` | — | `today`, `weekday`, `data_period{from, to}` (от первой операции до сегодня, не длиннее 36 месяцев; без операций `null`), `operations_count`, `wallets[{name, currency}]`, `currencies[]`, `default_currency` (та же валюта по умолчанию), `hint` | `data-range`, `accounts`, `currencies` |
 | `list_wallets` | `currency?` | `wallets[{name, currency, balance}]`, `total`, `incomplete`, `date` | `accounts`, `balance?date=<завтра>` |
 | `list_categories` | — | `categories[]` без системных и архивных | `accounts` |
 | `spending_by_category` | `from`, `to`, `categories?`, `exclude_categories?`, `compare_from?`, `compare_to?`, `currency?` | `rows[{category, amount, amount_before?, delta?, count, avg_per_month, count_before?, avg_per_month_before?, similar?}]`, `total`, `total_before?`, `incomplete`, `count`, `months`, `avg_per_month`, `count_before?`, `months_before?`, `avg_per_month_before?` | `expense-structure` ×1 или ×2 |
