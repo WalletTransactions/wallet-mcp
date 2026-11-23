@@ -289,3 +289,23 @@ TEST(mcp_months_of_year_out_of_range_is_invalid_params) {
         CHECK_EQ(error_code(call(body)), -32602);
     }
 }
+
+TEST(mcp_descriptions_say_omit_for_all_and_outside_wallets) {
+    json j = call(R"({"jsonrpc":"2.0","id":1,"method":"tools/list"})");
+    const std::string omit = "Нужны все — не передавай";
+    int checked = 0;
+    for (const auto& t : j["result"]["tools"]) {
+        const std::string name = t["name"];
+        const json& props = t["inputSchema"]["properties"];
+        if (name == "search_operations") {
+            CHECK(props["wallets"]["description"].get<std::string>().find(omit) != std::string::npos);
+            CHECK(props["categories"]["description"].get<std::string>().find(omit) != std::string::npos);
+            CHECK(t["description"].get<std::string>().find("outside_wallets") != std::string::npos);
+            ++checked;
+        } else if (name == "spending_by_category" || name == "spending_by_category_by_month") {
+            CHECK(props["categories"]["description"].get<std::string>().find(omit) != std::string::npos);
+            ++checked;
+        }
+    }
+    CHECK_EQ(checked, 3);
+}

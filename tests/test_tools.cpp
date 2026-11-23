@@ -1210,3 +1210,135 @@ TEST(tools_similar_by_month_honours_months_of_year) {
                                                     {"categories", {"Кафе и рестораны"}}});
     CHECK_EQ(r["rows"][0]["similar"], (json{{{"category", "Restaurants"}, {"amount", "987.39"}, {"count", 64}}}));
 }
+
+// --- change add-wildcard-names: "*" — все, outside_wallets ---
+
+TEST(tools_wildcard_wallets_drops_filter) {
+    Env e;
+    e.reports.set("/api/reports/operations",
+                  search_body({{"first_date", "2026-09-01"}, {"last_date", "2026-09-20"}, {"by_category", json::array()}}, 7));
+    json r = e.ok("search_operations", with(kSeptember, {{"categories", {"Няня"}}, {"wallets", {"*"}}}));
+    std::string q = e.reports.last("/api/reports/operations");
+    CHECK(!contains(q, "wallet_uuid"));
+    CHECK(contains(q, "category_uuid=c-nanny"));
+    CHECK_EQ(r["count"], 7);
+    CHECK(!r.contains("outside_wallets"));
+
+    // "*" вместе с именем — тоже без фильтра; пробелы вокруг не мешают.
+    e.ok("search_operations", with(kSeptember, {{"categories", {"Няня"}}, {"wallets", {" * ", "Наличные"}}}));
+    CHECK(!contains(e.reports.last("/api/reports/operations"), "wallet_uuid"));
+}
+
+TEST(tools_wildcard_categories_equals_no_categories) {
+    Env e;
+    e.reports.set("/api/reports/expense-structure",
+                  structure({cat_row("c-nanny", "Няня", "100"), cat_row("c-food", "Продукты", "50")}, "150.00"));
+    json all = e.ok("spending_by_category", kSeptember);
+    json star = e.ok("spending_by_category", with(kSeptember, {{"categories", {"*"}}}));
+    CHECK_EQ(star, all);
+    CHECK_EQ(star["rows"].size(), 2u);
+    CHECK_EQ(star["total"], "150.00");
+
+    // categories: ["*"] вместе с exclude_categories — «все, кроме», а не ошибка «не оба».
+    json except = e.ok("spending_by_category", with(kSeptember, {{"categories", {"*"}}, {"exclude_categories", {"Няня"}}}));
+    CHECK_EQ(except["rows"].size(), 1u);
+    CHECK_EQ(except["rows"][0]["category"], "Продукты");
+}
+
+TEST(tools_wildcard_balance_wallet_is_all) {
+    Env e;
+    e.reports.set("/api/reports/balance",
+                  {{"accounts",
+                    {{{"account_uuid", "w-cash"}, {"account_name", "Наличные"}, {"currency_uuid", "c-RUB"},
+                      {"symbol", "₽"}, {"precision", 2}, {"balance", "100"}, {"balance_eq", "100"}},
+                     {{"account_uuid", "w-rev"}, {"account_name", "Revolut"}, {"currency_uuid", "c-EUR"},
+                      {"symbol", "€"}, {"precision", 2}, {"balance", "2"}, {"balance_eq", "190"}}}},
+                   {"total_eq", "290"},
+                   {"incomplete", false},
+                   {"eq_currency_uuid", "c-RUB"}});
+    json r = e.ok("balance", {{"wallet", "*"}});
+    CHECK_EQ(r["wallets"].size(), 2u);
+    CHECK_EQ(r["total"], "290.00");
+}
+
+TEST(tools_wildcard_is_not_a_name_elsewhere) {
+    Env e;
+    // Обычное ненайденное имя по-прежнему ошибка со списком.
+    CHECK(contains(e.error("search_operations", with(kSeptember, {{"wallets", {"Cash"}}})), "\"Cash\" не найдено"));
+}
+
+namespace {
+json empty_search() {
+    return search_body({{"by_category", json::array()}}, 0, {{"total_eq", "0"}});
+}
+} // namespace
+
+TEST(tools_search_outside_wallets_found_elsewhere) {
+    Env e;
+    e.reports.push("/api/reports/operations", empty_search());
+    e.reports.push("/api/reports/operations",
+                   {{"operations", json::array()}, {"incomplete", false}, {"has_more", true},
+                    {"next_cursor_date", "2026-09-20 10:00:00"}, {"next_cursor_uuid", "u"},
+                    {"eq_currency_uuid", "c-RUB"}, {"total_eq", "2078"}, {"total_incomplete", false},
+                    {"total_count", 7}});
+    json r = e.ok("search_operations",
+                  with(kSeptember, {{"categories", {"Няня"}}, {"wallets", {"Revolut"}}, {"text", json::array({"няня"})}}));
+    CHECK_EQ(e.reports.count("/api/reports/operations"), 2);
+    std::string first = e.reports.requests[e.reports.requests.size() - 2];
+    std::string second = e.reports.last("/api/reports/operations");
+    CHECK(contains(first, "wallet_uuid=w-rev"));
+    CHECK(!contains(second, "wallet_uuid"));
+    CHECK(!contains(second, "summary"));
+    CHECK(contains(second, "limit=1"));
+    CHECK(contains(second, "category_uuid=c-nanny"));
+    CHECK(contains(second, "kind=expense"));
+    CHECK(contains(second, "q="));
+    CHECK_EQ(r["count"], 0);
+    CHECK_EQ(r["outside_wallets"], (json{{"count", 7}, {"total", "2078.00"}}));
+    // Ответ — про запрошенные кошельки: has_more второго запроса не протекает.
+    CHECK_EQ(r["has_more"], false);
+}
+
+TEST(tools_search_outside_wallets_nowhere) {
+    Env e;
+    e.reports.set("/api/reports/operations", empty_search());
+    json r = e.ok("search_operations", with(kSeptember, {{"categories", {"Няня"}}, {"wallets", {"Наличные"}}}));
+    CHECK_EQ(r["outside_wallets"], (json{{"count", 0}, {"total", "0.00"}}));
+}
+
+TEST(tools_search_outside_wallets_absent_cases) {
+    Env e;
+    // Нашлось — второго запроса нет.
+    e.reports.set("/api/reports/operations", search_body({{"by_category", json::array()}}, 3));
+    json found = e.ok("search_operations", with(kSeptember, {{"wallets", {"Наличные"}}}));
+    CHECK(!found.contains("outside_wallets"));
+    CHECK_EQ(e.reports.count("/api/reports/operations"), 1);
+
+    // Без wallets — поля нет даже при пустом результате.
+    e.reports.set("/api/reports/operations", empty_search());
+    json no_wallets = e.ok("search_operations", with(kSeptember, {{"categories", {"Няня"}}}));
+    CHECK(!no_wallets.contains("outside_wallets"));
+    CHECK_EQ(e.reports.count("/api/reports/operations"), 2);
+
+    // Страница с курсором — не первая, подсказки нет.
+    json paged = e.ok("search_operations", with(kSeptember, {{"wallets", {"Наличные"}},
+                                                             {"cursor", "2026-09-20 10:00:00|0f8c2a1e-7b3d-4c5a-9e6f-1a2b3c4d5e6f"}}));
+    CHECK(!paged.contains("outside_wallets"));
+    CHECK_EQ(e.reports.count("/api/reports/operations"), 3);
+}
+
+TEST(tools_search_outside_wallets_second_call_fails) {
+    Env e;
+    e.reports.push("/api/reports/operations", empty_search());
+    e.reports.push("/api/reports/operations", {{"error", "boom"}}, 500);
+    json r = e.ok("search_operations", with(kSeptember, {{"categories", {"Няня"}}, {"wallets", {"Наличные"}}}));
+    CHECK_EQ(r["count"], 0);
+    CHECK(!r.contains("outside_wallets"));
+
+    // Остался один kind: any — без фильтра итога нет, поля тоже нет.
+    e.reports.by_path["/api/reports/operations"] = {
+        {200, empty_search()},
+        {200, {{"operations", json::array()}, {"incomplete", false}, {"has_more", false}, {"eq_currency_uuid", "c-RUB"}}}};
+    json any = e.ok("search_operations", with(kSeptember, {{"wallets", {"Наличные"}}, {"kind", "any"}}));
+    CHECK(!any.contains("outside_wallets"));
+}
