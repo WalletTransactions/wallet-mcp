@@ -2,9 +2,9 @@
 
 namespace directory {
 
-std::optional<std::vector<Currency>> parse_currencies(const nlohmann::json& body) {
+std::optional<Currencies> parse_currencies(const nlohmann::json& body) {
     if (!body.is_object() || !body.contains("currencies") || !body["currencies"].is_array()) return std::nullopt;
-    std::vector<Currency> out;
+    Currencies out;
     for (const auto& c : body["currencies"]) {
         if (!c.is_object() || !c.contains("iso_code") || !c["iso_code"].is_string()) continue;
         Currency cur;
@@ -13,7 +13,13 @@ std::optional<std::vector<Currency>> parse_currencies(const nlohmann::json& body
         if (c.contains("show_in_equivalent") && c["show_in_equivalent"].is_boolean()) {
             cur.show_in_equivalent = c["show_in_equivalent"].get<bool>();
         }
-        out.push_back(std::move(cur));
+        out.list.push_back(std::move(cur));
+    }
+    // null, пустая строка или нет поля (wallet-report до user-eq-currency) —
+    // валюта не выбрана.
+    if (body.contains("preferred_eq_currency") && body["preferred_eq_currency"].is_string()) {
+        std::string iso = body["preferred_eq_currency"].get<std::string>();
+        if (!iso.empty()) out.preferred_eq_currency = std::move(iso);
     }
     return out;
 }
@@ -34,14 +40,14 @@ void Cache::put_accounts(const std::string& key, resolver::Accounts a) {
     accounts_[key] = {std::move(a), clock_() + kTtl};
 }
 
-std::optional<std::vector<Currency>> Cache::currencies(const std::string& key) {
+std::optional<Currencies> Cache::currencies(const std::string& key) {
     std::lock_guard<std::mutex> lock(mu_);
     auto it = currencies_.find(key);
     if (it == currencies_.end() || clock_() >= it->second.until) return std::nullopt;
     return it->second.value;
 }
 
-void Cache::put_currencies(const std::string& key, std::vector<Currency> c) {
+void Cache::put_currencies(const std::string& key, Currencies c) {
     std::lock_guard<std::mutex> lock(mu_);
     currencies_[key] = {std::move(c), clock_() + kTtl};
 }

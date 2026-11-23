@@ -21,8 +21,16 @@ struct Currency {
     bool show_in_equivalent = true;
 };
 
-// Ответ GET /api/reports/currencies; nullopt — не по контракту.
-std::optional<std::vector<Currency>> parse_currencies(const nlohmann::json& body);
+// Ответ GET /api/reports/currencies: справочник валют и валюта эквивалента,
+// сохранённая пользователем в настройках (change user-eq-currency).
+struct Currencies {
+    std::vector<Currency> list;
+    // ISO-код; nullopt — не выбрана (null) или старый wallet-report без поля.
+    std::optional<std::string> preferred_eq_currency;
+};
+
+// nullopt — ответ не по контракту.
+std::optional<Currencies> parse_currencies(const nlohmann::json& body);
 
 class Cache {
 public:
@@ -32,8 +40,8 @@ public:
 
     std::optional<resolver::Accounts> accounts(const std::string& key);
     void put_accounts(const std::string& key, resolver::Accounts a);
-    std::optional<std::vector<Currency>> currencies(const std::string& key);
-    void put_currencies(const std::string& key, std::vector<Currency> c);
+    std::optional<Currencies> currencies(const std::string& key);
+    void put_currencies(const std::string& key, Currencies c);
     // Имя не нашлось — справочник могли только что поменять в приложении.
     void drop_accounts(const std::string& key);
 
@@ -48,7 +56,7 @@ private:
     mcpaccess::Clock clock_;
     std::mutex mu_;
     std::unordered_map<std::string, Slot<resolver::Accounts>> accounts_;
-    std::unordered_map<std::string, Slot<std::vector<Currency>>> currencies_;
+    std::unordered_map<std::string, Slot<Currencies>> currencies_;
     unsigned calls_ = 0;
 };
 
