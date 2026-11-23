@@ -84,7 +84,10 @@ HTTP `200`: `-32700` (не JSON), `-32600` (не JSON-RPC 2.0, батч), `-3260
 
 Аргументы — имена, а не uuid. Имя сравнивается без учёта регистра, `ё` = `е`:
 сначала точное совпадение, затем уникальный префикс. Неоднозначное или
-ненайденное имя — `isError` со списком, чтобы модель переспросила. Даты —
+ненайденное имя — `isError` со списком, чтобы модель переспросила. `"*"` в
+`wallets`, `categories`, `exclude_categories` или в `wallet` — «все»: параметр
+снимается, как будто его не передали (change `add-wildcard-names`, issue #39).
+Даты —
 `ГГГГ-ММ-ДД`, обе границы периода включаются. `currency` (ISO) необязателен:
 по умолчанию берётся валюта первого кошелька справочника. Каждый ответ —
 компактный JSON с `period` и `currency`, по которым он посчитан. Суммы —
@@ -99,7 +102,7 @@ HTTP `200`: `-32700` (не JSON), `-32600` (не JSON-RPC 2.0, батч), `-3260
 | `spending_by_category_by_month` | `from`, `to`, `categories?`, `exclude_categories?`, `months_of_year?`, `currency?` | `rows[{category, amount, count, avg_per_month, by_month?, similar?}]`, `months_of_year?`, `total`, `count`, `months`, `avg_per_month`, `incomplete` | `expense-by-category-by-month` ×1 |
 | `income_expense_by_month` | `from`, `to`, `currency?` | `months[{month, income, expense}]`, `incomplete` | `income-expense-by-month` |
 | `balance` | `wallet?`, `date?`, `currency?` | как `list_wallets` на конец дня `date` | `balance?date=<date+1>` |
-| `search_operations` | `from?`, `to?`, `text?` (массив вариантов), `exclude_text?` (массив вариантов), `categories?`, `exclude_categories?`, `wallets?`, `kind?`, `limit?`, `cursor?`, `currency?` | `operations[{date, kind, amount, currency, category, wallet \| from, to, comment}]`, `has_more`, `next_cursor?`, `total`, `count`, `incomplete`, `kind`, `summary{first_date?, last_date?, avg_interval_days?, by_category[{category, count, total}]}`, `other_matches?[{category, count, total}]` | `operations` с `category_uuid`/`exclude_category_uuid`/`wallet_uuid`/`kind`/`q` и `exclude_q` (повторённые)/`summary=true`/`limit`/`cursor_date`+`cursor_uuid` |
+| `search_operations` | `from?`, `to?`, `text?` (массив вариантов), `exclude_text?` (массив вариантов), `categories?`, `exclude_categories?`, `wallets?`, `kind?`, `limit?`, `cursor?`, `currency?` | `operations[{date, kind, amount, currency, category, wallet \| from, to, comment}]`, `has_more`, `next_cursor?`, `total`, `count`, `incomplete`, `kind`, `summary{first_date?, last_date?, avg_interval_days?, by_category[{category, count, total}]}`, `other_matches?[{category, count, total}]`, `outside_wallets?{count, total}` | `operations` с `category_uuid`/`exclude_category_uuid`/`wallet_uuid`/`kind`/`q` и `exclude_q` (повторённые)/`summary=true`/`limit`/`cursor_date`+`cursor_uuid` |
 | `ask_docs` | `question` (до 1000 символов) | `answer`, `sources[{repo, capability, heading}]` — как есть от wallet-docs; данных кошелька не читает. Только при заданном `WALLET_DOCS_URL` | `POST {WALLET_DOCS_URL}/api/docs/ask` (wallet-docs) |
 
 Детали:
@@ -196,6 +199,11 @@ HTTP `200`: `-32700` (не JSON), `-32600` (не JSON-RPC 2.0, батч), `-3260
   `count` ≥ 2 (деление двух значений ответа, как `avg_per_month`).
   `other_matches` — при `text` + `categories`: категории вне `categories`, где
   комментарий тоже совпал с `text` (пустой массив — «проверено, нет»).
+  `outside_wallets` — при `wallets`, когда на первой странице ничего не
+  нашлось: второй запрос `operations` без `wallet_uuid` и `summary`, с
+  `limit=1`, даёт `count` и `total` таких же операций во всех кошельках
+  (`count: 0` — «нет и в других»). Нет итога или wallet-report не ответил —
+  поля нет, основной ответ без ошибки.
   `exclude_text` требует wallet-report с `summary` (при его отсутствии в
   ответе — «Отчёты временно недоступны», а не неотфильтрованная сумма).
   Варианты уходят повторённым `q`; пустые после trim и повторы

@@ -42,6 +42,7 @@ namespace {
 // Схемы. Описания — на русском: их читает модель клиента.
 
 constexpr int kMaxNames = 50;     // столько uuid wallet-report принимает в фильтре
+constexpr const char* kAllNames = "*"; // «все» в wallets/categories/exclude_categories/wallet
 constexpr int kMaxTextChars = 100; // q у /operations
 constexpr int kMaxTextVariants = 10; // повторов q у /operations
 constexpr int kMaxCursorChars = 80;  // «дата|uuid»: 26 + 1 + 36 с запасом
@@ -114,7 +115,7 @@ json build_registry() {
         "категориях (имя, amount, count).",
         {{"from", from},
          {"to", to},
-         {"categories", names_prop("Имена категорий, например [\"Няня\", \"Продукты\"]")},
+         {"categories", names_prop("Имена категорий, например [\"Няня\", \"Продукты\"]. Нужны все — не передавай")},
          {"exclude_categories", exclude},
          {"compare_from", date_prop("Начало периода сравнения, ГГГГ-ММ-ДД — только вместе с compare_to")},
          {"compare_to", date_prop("Конец периода сравнения, ГГГГ-ММ-ДД, включительно — только вместе с compare_from")},
@@ -132,7 +133,7 @@ json build_registry() {
         "similar — расход той же темы лежит в других категориях (имя, amount, count).",
         {{"from", from},
          {"to", to},
-         {"categories", names_prop("Имена категорий; с ними в ответе есть by_month")},
+         {"categories", names_prop("Имена категорий; с ними в ответе есть by_month. Нужны все — не передавай")},
          {"exclude_categories", exclude},
          {"months_of_year", {{"type", "array"},
                              {"items", {{"type", "integer"}, {"minimum", 1}, {"maximum", 12}}},
@@ -170,6 +171,9 @@ json build_registry() {
         "avg_interval_days (среднее число дней между соседними, при count от 2) и by_category — категории с "
         "count и total. other_matches (при text и categories) — категории ВНЕ categories, где комментарий тоже "
         "совпал с text; если он не пуст, скажи пользователю, что такие операции есть в других категориях. "
+        "Нужны все кошельки — не передавай wallets. outside_wallets (при wallets, когда ничего не нашлось) — "
+        "count и total таких же операций во всех кошельках; если count больше 0, повтори поиск без wallets, "
+        "а не отвечай, что операций нет. "
         "kind по умолчанию \"expense\": total — сколько потрачено, "
         "неотрицательное. kind \"income\" и \"transfer\" — сумма доходов или переводов. kind \"any\" — все "
         "типы, тогда total — сальдо: доходы минус расходы, прямые переводы между кошельками в него не входят; "
@@ -191,9 +195,9 @@ json build_registry() {
                            {"description", "Исключить операции: варианты подстроки комментария (до 10, каждый до "
                                            "100 символов), без учёта регистра; операция, где комментарий "
                                            "содержит любой из них, не попадает в ответ"}}},
-         {"categories", names_prop("Имена категорий")},
+         {"categories", names_prop("Имена категорий. Нужны все — не передавай")},
          {"exclude_categories", exclude},
-         {"wallets", names_prop("Имена кошельков")},
+         {"wallets", names_prop("Имена кошельков. Нужны все — не передавай")},
          {"kind", {{"type", "string"},
                    {"enum", {"expense", "income", "transfer", "any"}},
                    {"description", "Тип операций, по умолчанию expense"}}},
@@ -1200,6 +1204,28 @@ ojson search_summary(const json& s, long long count, int precision) {
     return out;
 }
 
+// outside_wallets (change add-wildcard-names, design D2): тот же запрос без
+// wallet_uuid и summary, limit=1 — нужны только итоги, их wallet-report считает
+// по всем подходящим операциям периода. Без итога (остался только kind: any)
+// или при отказе wallet-report подсказки нет: основной ответ уже есть.
+std::optional<ojson> outside_wallets(Call& c, const std::vector<std::pair<std::string, std::string>>& params,
+                                     int precision) {
+    std::vector<std::pair<std::string, std::string>> rest;
+    for (const auto& [k, v] : params) {
+        if (k == "wallet_uuid" || k == "summary") continue;
+        rest.emplace_back(k, k == "limit" ? std::string("1") : v);
+    }
+    try {
+        json body = c.fetch(query("/api/reports/operations", rest));
+        if (!body.contains("total_eq") || !body.contains("total_count")) return std::nullopt;
+        return ojson{{"count", body["total_count"].get<int>()}, {"total", amount(body["total_eq"], precision)}};
+    } catch (const ReportsDown&) {
+        return std::nullopt;
+    } catch (const json::exception&) {
+        return std::nullopt;
+    }
+}
+
 ojson search_operations(Call& c, const json& args, const Context& ctx) {
     bool from_given = false;
     Period p = search_period(args, ctx.today, from_given);
@@ -1308,6 +1334,11 @@ ojson search_operations(Call& c, const json& args, const Context& ctx) {
                 if (r.is_object()) other.push_back(category_total_row(r, eq.precision));
             }
             out["other_matches"] = std::move(other);
+        }
+        // Пусто при фильтре по кошелькам — проверить, не лежат ли такие же
+        // операции в других (issue #39: модель потеряла Cash в списке из 71).
+        if (!wallets.empty() && cursor.date.empty() && body.value("total_count", 0) == 0) {
+            if (auto outside = outside_wallets(c, params, eq.precision)) out["outside_wallets"] = std::move(*outside);
         }
     }
     return out;
@@ -1421,13 +1452,37 @@ void validate(const std::string& name, const json& arguments) {
     }
 }
 
-Outcome call(const std::string& name, const json& arguments, Context& ctx) {
+// "*" — «все» (change add-wildcard-names, design D1): параметр снимается
+// целиком, как будто его не передали. Снимать здесь, а не в resolve_all:
+// инструменты решают по has(args, ...), отдавать ли similar, by_month и откуда
+// брать total, и пустой список вместо отсутствия параметра дал бы пустой ответ.
+// Только "*": «все» и all могут быть именами настоящих счетов.
+json without_wildcards(const json& arguments) {
+    json args = arguments;
+    if (!args.is_object()) return args;
+    for (const char* key : {"wallets", "categories", "exclude_categories"}) {
+        if (!args.contains(key) || !args[key].is_array()) continue;
+        for (const auto& item : args[key]) {
+            if (item.is_string() && trim(item.get<std::string>()) == kAllNames) {
+                args.erase(key);
+                break;
+            }
+        }
+    }
+    if (args.contains("wallet") && args["wallet"].is_string() && trim(args["wallet"].get<std::string>()) == kAllNames) {
+        args.erase("wallet");
+    }
+    return args;
+}
+
+Outcome call(const std::string& name, const json& raw_arguments, Context& ctx) {
     if (name == "ask_docs") {
         if (ctx.docs == nullptr) throw InvalidParams("Неизвестный инструмент: " + name);
-        validate(name, arguments);
-        return ask_docs(arguments, *ctx.docs);
+        validate(name, raw_arguments);
+        return ask_docs(raw_arguments, *ctx.docs);
     }
-    validate(name, arguments);
+    validate(name, raw_arguments);
+    const json arguments = without_wildcards(raw_arguments);
     Call c(ctx);
     Outcome out;
     try {
